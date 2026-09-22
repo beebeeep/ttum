@@ -1,0 +1,14 @@
+[package]
+name = "ttum"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+imap = "2.4.1"
+imap-proto = "0.10.2"
+native-tls = "0.2.18"
+rfc2047-decoder = "1.1.2"
+rusqlite = "0.40.2"
+time = { version = "0.3.55", features = ["macros", "parsing"] }
+url = "2.5.8"
