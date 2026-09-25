@@ -1,43 +1,38 @@
 use ratatui::{
     style::Style,
     text::Text,
-    widgets::{Block, List, ListState, StatefulWidget, Widget},
+    widgets::{Block, List, ListState, StatefulWidget, TableState, Widget},
 };
 
-use crate::color_scheme::COLOR_SCHEME;
+use crate::{color_scheme::COLOR_SCHEME, mail::Envelope};
 
-pub(crate) struct MailboxesList {
-    pub(crate) mailboxes: Vec<(String, Option<String>)>,
-    pub(crate) selected_mailbox: usize,
-    pub(crate) list_state: ListState,
+pub(crate) struct EmailsList {
+    // List of emails, already sorted by threads.
+    // Should be greater than displayable amount, and dynamically extended from both ends as user scrolls
+    pub(crate) emails: Vec<Envelope>,
+    pub(crate) selected_emails: usize,
+    pub(crate) table_state: TableState,
 }
 
-impl MailboxesList {
-    pub(crate) fn select_next_mailbox(&mut self) {
-        self.selected_mailbox = (self.selected_mailbox + 1) % self.mailboxes.len();
-        self.list_state.select(Some(self.selected_mailbox));
-        if self.mailboxes[self.selected_mailbox].1.is_none() {
-            self.select_next_mailbox();
-        }
+impl EmailsList {
+    pub(crate) fn select_next_email(&mut self) -> bool {
+        self.selected_emails = (self.selected_emails + 1) % self.emails.len();
+        self.table_state.select(Some(self.selected_emails));
+        return self.selected_emails == 0;
     }
-    pub(crate) fn select_prev_mailbox(&mut self) {
-        self.selected_mailbox =
-            (self.selected_mailbox + self.mailboxes.len() - 1) % self.mailboxes.len();
-        self.list_state.select(Some(self.selected_mailbox));
-        if self.mailboxes[self.selected_mailbox].1.is_none() {
-            {
-                self.select_prev_mailbox();
-            }
-        }
+    pub(crate) fn select_prev_email(&mut self) -> bool {
+        self.selected_emails = (self.selected_emails + self.emails.len() - 1) % self.emails.len();
+        self.table_state.select(Some(self.selected_emails));
+        return self.selected_emails == self.emails.len() - 1;
     }
 }
 
-impl Widget for &mut MailboxesList {
+impl Widget for &mut EmailsList {
     fn render(self, area: ratatui::prelude::Rect, buf: &mut ratatui::prelude::Buffer)
     where
         Self: Sized,
     {
-        let list = List::from_iter(self.mailboxes.iter().map(|(account, mbox)| match mbox {
+        let list = List::from_iter(self.emails.iter().map(|(account, mbox)| match mbox {
             Some(mbox) => Text::styled(format!("  {mbox}"), Style::default()),
             None => Text::styled(account.as_str(), Style::default().bold()),
         }))

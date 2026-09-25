@@ -150,6 +150,16 @@ impl Email {
     }
 }
 
+pub(crate) struct Envelope {
+    pub(crate) subject: Box<str>,
+    pub(crate) timestamp: OffsetDateTime,
+    pub(crate) addresses: Vec<Address>, // from address for inboxes, to address for outboxes
+    pub(crate) seen: bool,
+    pub(crate) id: Option<Box<str>>,
+    pub(crate) in_reply_to: Option<Box<str>>,
+    pub(crate) thread_root: Option<Box<str>>,
+}
+
 fn parse_str(s: &[u8]) -> Box<str> {
     // TODO: sometimes base64 comes with malformed padding, so we might need to manually restore it
     let decoder = rfc2047_decoder::Decoder::new()
@@ -193,7 +203,8 @@ pub fn connect_to_accounts(
     db: &Connection,
 ) -> Result<HashMap<Box<str>, imap::Session<TlsStream<TcpStream>>>> {
     let connector = TlsConnector::new().context("initializing TLS")?;
-    let mut stmt = db.prepare("SELECT name, host, port, login, password FROM accounts")?;
+    let mut stmt =
+        db.prepare("SELECT name, host, port, login, password, starttls FROM accounts")?;
     let mut rows = stmt.query([]).context("querying the database")?;
     let mut connections = HashMap::with_capacity(2);
     while let Some(r) = rows.next()? {
@@ -202,8 +213,15 @@ pub fn connect_to_accounts(
         let port: u16 = r.get(2)?;
         let user: Box<str> = r.get(3)?;
         let password: Box<str> = r.get(4)?;
-        let client = imap::connect_starttls((host.as_ref(), port), &host, &connector)
-            .context("connecting to server")?;
+        let starttls: bool = r.get(5)?;
+        eprintln!("connecting to {host}:{port}, starttls: {starttls}");
+        let client = if starttls {
+            imap::connect_starttls((host.as_ref(), port), &host, &connector)
+                .context("connecting to server")?
+        } else {
+            imap::connect_starttls((host.as_ref(), port), &host, &connector)
+                .context("connecting to server")?
+        };
         let mut session = client
             .login(user, password)
             .map_err(|e| e.0)

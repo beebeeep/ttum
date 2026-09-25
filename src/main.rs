@@ -61,5 +61,5 @@ fn init_db(file: &str) -> Result<Connection> {
 fn main() -> Result<()> {
     let db = init_db("ttum.db").context("initializing database")?;
     let app = App::load(db)?;
-    Ok(())
+    app.run()
 }
