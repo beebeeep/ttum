@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt::Display;
 use std::net::TcpStream;
 
 use anyhow::Context;
@@ -33,9 +34,30 @@ impl rusqlite::ToSql for AddrType {
     }
 }
 
-struct Address {
-    email: Box<str>,
-    name: Option<Box<str>>,
+pub(crate) struct Address {
+    pub(crate) email: Box<str>,
+    pub(crate) name: Option<Box<str>>,
+}
+
+impl Display for Address {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.name {
+            Some(n) => write!(f, "{n} <{}>", self.email),
+            None => write!(f, "{}", self.email),
+        }
+    }
+}
+
+impl From<&Address> for Box<str> {
+    fn from(a: &Address) -> Self {
+        Box::from(format!("{a}"))
+    }
+}
+
+impl From<&Address> for String {
+    fn from(a: &Address) -> Self {
+        format!("{a}")
+    }
 }
 
 impl From<&imap_proto::types::Address<'_>> for Address {

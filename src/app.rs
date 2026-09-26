@@ -1,17 +1,19 @@
 use std::time::Duration;
 
 use crate::{
-    mail,
+    emails_widget::EmailsList,
+    mail::{self, Address, Envelope},
     mailboxes_widget::MailboxesList,
     model::{self, ActivePane, Message, Model, RunningState},
 };
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use ratatui::{
     Frame,
     crossterm::event::{self, Event, KeyCode},
     layout::{Constraint, Layout, Rect},
-    widgets::ListState,
+    widgets::{ListState, TableState},
 };
+use time::OffsetDateTime;
 
 pub struct App {
     model: Model,
@@ -42,10 +44,16 @@ impl App {
                     selected_mailbox: 0,
                     list_state: ListState::default(),
                 },
+                emails_list: EmailsList {
+                    emails: Vec::with_capacity(10),
+                    selected_email: 0,
+                    table_state: TableState::default(),
+                },
             },
             db,
         };
         r.model.mbox_list.select_next_mailbox();
+        r.model.emails_list.table_state.select_next();
 
         Ok(r)
     }
@@ -62,7 +70,7 @@ impl App {
 
             // Process updates as long as they return a non-None message
             while current_msg.is_some() {
-                current_msg = self.update(current_msg.unwrap());
+                current_msg = self.update(current_msg.unwrap())?;
             }
         }
         ratatui::restore();
@@ -84,6 +92,7 @@ impl App {
         let columns =
             Layout::horizontal([Constraint::Percentage(30), Constraint::Fill(1)]).split(area);
         frame.render_widget(&mut self.model.mbox_list, columns[0]);
+        frame.render_widget(&mut self.model.emails_list, columns[1]);
     }
 
     fn handle_event(&mut self) -> Result<Option<Message>> {
@@ -118,21 +127,89 @@ impl App {
         }
     }
 
-    fn update(&mut self, msg: Message) -> Option<Message> {
-        match msg {
-            Message::KeyPress(_) => {}
+    fn update(&mut self, msg: Message) -> Result<Option<Message>> {
+        Ok(match msg {
+            Message::KeyPress(_) => None,
             Message::NextMailbox => {
-                self.model.mbox_list.select_next_mailbox();
+                self.select_next_mailbox()?;
+                None
             }
+
             Message::PrevMailbox => {
-                self.model.mbox_list.select_prev_mailbox();
+                self.select_prev_mailbox()?;
+                None
             }
             Message::NextMessage => todo!(),
             Message::PrevMessage => todo!(),
             Message::FocusNext => todo!(),
             Message::FocusPrev => todo!(),
-            Message::Quit => self.model.running_state = RunningState::Done,
+            Message::Quit => {
+                self.model.running_state = RunningState::Done;
+                None
+            }
+        })
+    }
+
+    fn select_next_mailbox(&mut self) -> Result<()> {
+        self.model.mbox_list.select_next_mailbox();
+        let emails = {
+            let (account, Some(mailbox)) =
+                &self.model.mbox_list.mailboxes[self.model.mbox_list.selected_mailbox]
+            else {
+                return Err(anyhow!("empty mailbox"));
+            };
+            self.load_mbox_emails(account, mailbox)
+                .context("loading mailbox")?
+        };
+        self.model.emails_list.emails = emails;
+        Ok(())
+    }
+
+    fn select_prev_mailbox(&mut self) -> Result<()> {
+        self.model.mbox_list.select_prev_mailbox();
+        let emails = {
+            let (account, Some(mailbox)) =
+                &self.model.mbox_list.mailboxes[self.model.mbox_list.selected_mailbox]
+            else {
+                return Err(anyhow!("empty mailbox"));
+            };
+            self.load_mbox_emails(account, mailbox)
+                .context("loading mailbox")?
+        };
+        self.model.emails_list.emails = emails;
+        Ok(())
+    }
+
+    fn load_mbox_emails(&self, account: &str, mailbox: &str) -> Result<Vec<Envelope>> {
+        let mut stmt = self.db.prepare("SELECT a.name, a.email, message_id, in_reply_to, timestamp, internal_timestamp, subject
+            FROM emails e
+            JOIN email_addresses a
+            ON e.mailbox = a.mailbox AND e.uid = a.uid
+            WHERE a.type = 1 AND e.mailbox = ?1
+            LIMIT 10"
+        )?;
+        let mut rows = stmt.query([mailbox])?;
+        let mut result = Vec::with_capacity(10);
+        while let Some(row) = rows.next()? {
+            let ts: Option<i64> = row.get(4)?;
+            let internal_ts: i64 = row.get(5)?;
+            let timestamp = OffsetDateTime::from_unix_timestamp(ts.unwrap_or(internal_ts))?;
+            let subject: Option<Box<str>> = row.get(6)?;
+            let msg = Envelope {
+                subject: subject.unwrap_or(Box::from("")),
+                timestamp,
+                addresses: vec![Address {
+                    email: row.get(1)?,
+                    name: row.get(0)?,
+                }],
+                seen: false,
+                id: row.get(2)?,
+                in_reply_to: row.get(3)?,
+                thread_root: None,
+            };
+            result.push(msg);
         }
-        None
+
+        Ok(result)
     }
 }

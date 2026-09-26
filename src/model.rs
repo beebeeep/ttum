@@ -1,11 +1,12 @@
 use crossterm::event::KeyEvent;
 
-use crate::mailboxes_widget::MailboxesList;
+use crate::{emails_widget::EmailsList, mailboxes_widget::MailboxesList};
 
 pub(crate) struct Model {
     pub(crate) running_state: RunningState,
     pub(crate) active_pane: ActivePane,
     pub(crate) mbox_list: MailboxesList,
+    pub(crate) emails_list: EmailsList,
 }
 
 #[derive(Default, PartialEq)]
