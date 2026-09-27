@@ -7,7 +7,7 @@ use ratatui::{
 use crate::color_scheme::COLOR_SCHEME;
 
 pub(crate) struct MailboxesList {
-    pub(crate) mailboxes: Vec<(String, Option<String>)>,
+    pub(crate) mailboxes: Vec<(Box<str>, Option<Box<str>>)>,
     pub(crate) selected_mailbox: usize,
     pub(crate) list_state: ListState,
 }
@@ -30,6 +30,16 @@ impl MailboxesList {
             }
         }
     }
+    pub(crate) fn current_mailbox(&self) -> (Box<str>, Box<str>) {
+        (
+            self.mailboxes[self.selected_mailbox].0.clone(),
+            self.mailboxes[self.selected_mailbox]
+                .1
+                .as_ref()
+                .unwrap()
+                .clone(),
+        )
+    }
 }
 
 impl Widget for &mut MailboxesList {
@@ -39,7 +49,7 @@ impl Widget for &mut MailboxesList {
     {
         let list = List::from_iter(self.mailboxes.iter().map(|(account, mbox)| match mbox {
             Some(mbox) => Text::styled(format!("  {mbox}"), Style::default()),
-            None => Text::styled(account.as_str(), Style::default().bold()),
+            None => Text::styled(String::from(account.as_ref()), Style::default().bold()),
         }))
         .style(
             Style::default()

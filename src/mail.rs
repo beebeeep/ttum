@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::net::TcpStream;
+use std::sync::mpsc;
 
 use anyhow::Context;
 use anyhow::Result;
@@ -13,6 +14,8 @@ use time::OffsetDateTime;
 use time::Time;
 use time::UtcOffset;
 use time::format_description::well_known;
+
+use crate::model::Message;
 
 enum AddrType {
     From,
@@ -123,18 +126,19 @@ struct Email {
 }
 
 impl Email {
-    fn save_to_db(&self, mailbox: &str, db: &mut Connection) -> Result<()> {
+    fn save_to_db(&self, account: &str, mailbox: &str, db: &mut Connection) -> Result<()> {
         let tx = db.transaction().context("starting transaction")?;
         tx.execute(
             "INSERT INTO emails (
-                mailbox, uid, message_id, timestamp, internal_timestamp,
+                account, mailbox, uid, message_id, timestamp, internal_timestamp,
                 subject, in_reply_to, seen, body
             ) VALUES (
-                ?1, ?2, ?3, ?4,
-                ?5, ?6, ?7, ?8, ?9
+                ?1, ?2, ?3, ?4, 
+                ?5, ?6, ?7, ?8, ?9, ?10
 
             )",
             (
+                account,
                 mailbox,
                 self.uid,
                 &self.message_id,
@@ -236,7 +240,6 @@ pub fn connect_to_accounts(
         let user: Box<str> = r.get(3)?;
         let password: Box<str> = r.get(4)?;
         let starttls: bool = r.get(5)?;
-        eprintln!("connecting to {host}:{port}, starttls: {starttls}");
         let client = if starttls {
             imap::connect_starttls((host.as_ref(), port), &host, &connector)
                 .context("connecting to server")?
@@ -254,7 +257,12 @@ pub fn connect_to_accounts(
     Ok(connections)
 }
 
-pub fn index_email(mailbox: &str, f: &imap::types::Fetch, db: &mut Connection) -> Result<()> {
+pub fn index_email(
+    account: &str,
+    mailbox: &str,
+    f: &imap::types::Fetch,
+    db: &mut Connection,
+) -> Result<()> {
     let envelope = f.envelope().context("no envelope")?;
     let internal_timestamp = match f.internal_date() {
         Some(d) => OffsetDateTime::from_unix_timestamp(d.timestamp())?,
@@ -303,7 +311,7 @@ pub fn index_email(mailbox: &str, f: &imap::types::Fetch, db: &mut Connection) -
         body: None,
     };
 
-    m.save_to_db(mailbox, db)
+    m.save_to_db(account, mailbox, db)
         .context("saving message to database")?;
     Ok(())
 }
@@ -313,48 +321,34 @@ pub fn reindex_mailbox(
     mailbox: &str,
     session: &mut imap::Session<TlsStream<TcpStream>>,
     db: &mut Connection,
+    notifications: mpsc::Sender<Message>,
 ) -> Result<()> {
-    db.execute("DELETE FROM emails WHERE mailbox=?1", [mailbox])
-        .context("cleaning up db")?;
-    db.execute("DELETE FROM email_attachements WHERE mailbox=?1", [mailbox])
-        .context("cleaning up db")?;
+    db.execute(
+        "DELETE FROM emails WHERE account=?1 AND mailbox=?2",
+        [account, mailbox],
+    )
+    .context("cleaning up db")?;
+    db.execute(
+        "DELETE FROM email_attachements WHERE account=?1 AND mailbox=?2",
+        [account, mailbox],
+    )
+    .context("cleaning up db")?;
 
     let mbox = session.select(mailbox).context("opening mailbox")?;
-    if let Some(v) = mbox.uid_validity {
-        db.execute(
-            "INSERT into mailboxes (name, account, uid_validity)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT (name) DO UPDATE SET uid_validity=excluded.uid_validity",
-            (mailbox, account, v),
-        )
-        .context("updating uid_validity")?;
-    }
     let max_uid = mbox.uid_next.context("no next uid?")?;
 
     for uid in 1..max_uid {
-        fetch_email(mailbox, uid, session, db)?;
+        fetch_email(account, mailbox, uid, session, db)?;
         if uid % 10 == 0 {
-            println!("{uid} of {max_uid} fetched");
+            let _ = notifications.send(Message::ReindexStatus(crate::model::ReindexStatus {
+                account: Box::from(account),
+                mailbox: Box::from(mailbox),
+                current_uid: uid,
+                max_uid,
+                done: false,
+            }));
         }
     }
-    // let mut range = (1, 50)xx;
-    // let max_uid = 100;
-    // loop {
-    //     let fetch = session
-    //         .uid_fetch(
-    //             format!("{}:{}", range.0, range.1),
-    //             "(FLAGS INTERNALDATE ENVELOPE)",
-    //         )
-    //         .context("fetching messages")?;
-    //     for f in fetch.iter() {
-    //         index_email(mailbox, f, db)?;
-    //     }
-    //     range = (range.1 + 1, range.1 + 51);
-    //     if range.0 >= max_uid {
-    //         break;
-    //     }
-    //     println!("{range:?}");
-    // }
 
     Ok(())
 }
@@ -378,6 +372,7 @@ fn parse_datetime(ts: &mail_parser::DateTime) -> Option<OffsetDateTime> {
 }
 
 fn fetch_email(
+    account: &str,
     mailbox: &str,
     uid: u32,
     session: &mut imap::Session<TlsStream<TcpStream>>,
@@ -425,9 +420,40 @@ fn fetch_email(
     };
 
     email
-        .save_to_db(mailbox, db)
+        .save_to_db(account, mailbox, db)
         .context("saving message to database")?;
     Ok(())
+}
+
+pub(crate) fn get_mailboxes(
+    account: &str,
+    update: bool,
+    session: &mut imap::Session<TlsStream<TcpStream>>,
+    db: &Connection,
+) -> Result<Vec<String>> {
+    let mut mailboxes = Vec::with_capacity(3);
+    if !update {
+        let mut stmt = db.prepare("SELECT name FROM mailboxes WHERE account=?1")?;
+        let mut rows = stmt.query([account])?;
+        while let Some(row) = rows.next()? {
+            mailboxes.push(row.get(0)?);
+        }
+        return Ok(mailboxes);
+    }
+    let list = session.list(None, Some("*")).context("listing mailboxes")?;
+    let mut stmt = db.prepare(
+        "
+        INSERT into mailboxes (name, account, uid_validity)
+        VALUES (?1, ?2, ?3)
+        ON CONFLICT (name) DO UPDATE SET uid_validity=excluded.uid_validity",
+    )?;
+    for v in &list {
+        let mailbox = utf7_imap::decode_utf7_imap(String::from(v.name()));
+        let mbox = session.select(v.name()).context("opening mailbox")?;
+        stmt.execute((&mailbox, account, mbox.uid_validity))?;
+        mailboxes.push(mailbox);
+    }
+    Ok(mailboxes)
 }
 
 mod test {

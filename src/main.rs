@@ -16,12 +16,12 @@ fn init_db(file: &str) -> Result<Connection> {
     )?;
     conn.execute(
         "CREATE TABLE IF NOT EXISTS emails(
-            mailbox TEXT, uid INTEGER, message_id TEXT,
+            account TEXT, mailbox TEXT, uid INTEGER, message_id TEXT,
             timestamp INTEGER, internal_timestamp INTEGER,
             subject TEXT, in_reply_to TEXT,
             seen INTEGER,
             body TEXT,
-            PRIMARY KEY (mailbox, uid)
+            PRIMARY KEY (account, mailbox, uid)
         )
         ",
         (),
@@ -29,30 +29,30 @@ fn init_db(file: &str) -> Result<Connection> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS email_addresses(
             id INTEGER PRIMARY KEY,
-            mailbox TEXT, uid INTEGER,
-            type INTEGER,                 -- to, from, sender, cc, bcc
+            account TEXT, mailbox TEXT, uid INTEGER,
+            type INTEGER,                 -- from, to, sender, cc, bcc
             name TEXT, email TEXT,
-            FOREIGN KEY (mailbox, uid) REFERENCES emails(mailbox, uid) ON DELETE CASCADE
+            FOREIGN KEY (account, mailbox, uid) REFERENCES emails(account, mailbox, uid) ON DELETE CASCADE
         )",
         (),
     )?;
     conn.execute(
         "CREATE TABLE IF NOT EXISTS email_attachements(
-            mailbox TEXT, uid INTEGER, name TEXT,
+            account TEXT, mailbox TEXT, uid INTEGER, name TEXT,
             attachement_type TEXT,
             content TEXT,
-            PRIMARY KEY (mailbox, uid, name),
-            FOREIGN KEY (mailbox, uid) REFERENCES emails(mailbox, uid) ON DELETE CASCADE
+            PRIMARY KEY (account, mailbox, uid, name),
+            FOREIGN KEY (account, mailbox, uid) REFERENCES emails(account, mailbox, uid) ON DELETE CASCADE
         )
         ",
         (),
     )?;
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_email_message_id ON emails(mailbox, uid, message_id)",
+        "CREATE INDEX IF NOT EXISTS idx_email_message_id ON emails(account, mailbox, uid, message_id)",
         (),
     )?;
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_email_ts ON emails(timestamp)",
+        "CREATE INDEX IF NOT EXISTS idx_email_ts ON emails(account, mailbox, timestamp)",
         (),
     )?;
     Ok(conn)
@@ -61,5 +61,10 @@ fn init_db(file: &str) -> Result<Connection> {
 fn main() -> Result<()> {
     let db = init_db("ttum.db").context("initializing database")?;
     let app = App::load(db)?;
-    app.run()
+    let r = app.run();
+    ratatui::restore();
+    if let Err(e) = r {
+        eprintln!("got error: {e}");
+    }
+    Ok(())
 }
