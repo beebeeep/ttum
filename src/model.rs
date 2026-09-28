@@ -1,6 +1,6 @@
 use crossterm::event::KeyEvent;
 
-use crate::{emails_widget::EmailsList, mailboxes_widget::MailboxesList};
+use crate::{content_widget::Content, emails_widget::EmailsList, mailboxes_widget::MailboxesList};
 
 #[derive(Default, Debug)]
 pub(crate) struct ReindexStatus {
@@ -14,9 +14,12 @@ pub(crate) struct ReindexStatus {
 pub(crate) struct Model {
     pub(crate) running_state: RunningState,
     pub(crate) active_pane: ActivePane,
-    pub(crate) mbox_list: MailboxesList,
-    pub(crate) emails_list: EmailsList,
     pub(crate) reindex_status: ReindexStatus,
+    pub(crate) status_bar_text: String,
+
+    pub(crate) mbox_pane: MailboxesList,
+    pub(crate) emails_pane: EmailsList,
+    pub(crate) content_pane: Content,
 }
 
 #[derive(Default, PartialEq)]

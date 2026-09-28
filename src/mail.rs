@@ -184,16 +184,6 @@ impl Email {
     }
 }
 
-pub(crate) struct Envelope {
-    pub(crate) subject: Box<str>,
-    pub(crate) timestamp: OffsetDateTime,
-    pub(crate) addresses: Vec<Address>, // from address for inboxes, to address for outboxes
-    pub(crate) seen: bool,
-    pub(crate) id: Option<Box<str>>,
-    pub(crate) in_reply_to: Option<Box<str>>,
-    pub(crate) thread_root: Option<Box<str>>,
-}
-
 fn parse_str(s: &[u8]) -> Box<str> {
     // TODO: sometimes base64 comes with malformed padding, so we might need to manually restore it
     let decoder = rfc2047_decoder::Decoder::new()

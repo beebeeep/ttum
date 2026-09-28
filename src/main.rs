@@ -68,7 +68,7 @@ fn main() -> Result<()> {
     let r = app.run();
     ratatui::restore();
     if let Err(e) = r {
-        eprintln!("got error: {e}");
+        eprintln!("got error: {e:#}");
     }
     Ok(())
 }

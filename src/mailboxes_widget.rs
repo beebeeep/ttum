@@ -10,6 +10,7 @@ pub(crate) struct MailboxesList {
     pub(crate) mailboxes: Vec<(Box<str>, Option<Box<str>>)>,
     pub(crate) selected_mailbox: usize,
     pub(crate) list_state: ListState,
+    pub(crate) focused: bool,
 }
 
 impl MailboxesList {
@@ -47,30 +48,27 @@ impl Widget for &mut MailboxesList {
     where
         Self: Sized,
     {
+        let default_style = Style::default()
+            .fg(COLOR_SCHEME.text_fg)
+            .bg(COLOR_SCHEME.text_bg);
+        let highlight_style = Style::default()
+            .fg(COLOR_SCHEME.cursor_fg)
+            .bg(COLOR_SCHEME.cursor_bg);
         let list = List::from_iter(self.mailboxes.iter().map(|(account, mbox)| match mbox {
             Some(mbox) => Text::styled(format!("  {mbox}"), Style::default()),
             None => Text::styled(String::from(account.as_ref()), Style::default().bold()),
         }))
-        .style(
-            Style::default()
-                .fg(COLOR_SCHEME.text_fg)
-                .bg(COLOR_SCHEME.text_bg),
-        )
-        .highlight_style(
-            Style::default()
-                .fg(COLOR_SCHEME.cursor_fg)
-                .bg(COLOR_SCHEME.cursor_bg),
-        );
-        let mut block = Block::bordered()
-            .title("Mailboxes")
-            .title_alignment(ratatui::layout::Alignment::Left);
-        block = block
+        .style(default_style)
+        .highlight_style(highlight_style);
+        let block = Block::bordered()
+            .title(" Mailboxes ")
+            .title_style(if self.focused {
+                highlight_style.bold()
+            } else {
+                default_style
+            })
+            .title_alignment(ratatui::layout::Alignment::Left)
             .border_type(ratatui::widgets::BorderType::Rounded)
-            .title_style(
-                Style::default()
-                    .fg(COLOR_SCHEME.text_fg)
-                    .bg(COLOR_SCHEME.text_bg),
-            )
             .border_style(
                 Style::default()
                     .fg(COLOR_SCHEME.text_fg)

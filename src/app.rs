@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     net::TcpStream,
     sync::{Arc, Mutex, RwLock, mpsc},
     thread,
@@ -8,8 +8,9 @@ use std::{
 
 use crate::{
     color_scheme::COLOR_SCHEME,
+    content_widget::Content,
     emails_widget::EmailsList,
-    mail::{self, Address, Envelope, get_mailboxes},
+    mail::{self, Address, get_mailboxes},
     mailboxes_widget::MailboxesList,
     model::{self, ActivePane, Message, Model, ReindexStatus, RunningState},
     util::centered_rect,
@@ -20,7 +21,7 @@ use ratatui::{
     Frame,
     crossterm::event::{self, Event, KeyCode},
     layout::{Constraint, Layout, Margin, Rect},
-    style::Style,
+    style::{self, Style},
     widgets::{Block, Clear, LineGauge, ListState, Paragraph, TableState, Widget},
 };
 use time::OffsetDateTime;
@@ -32,6 +33,23 @@ pub struct App {
     events_rx: mpsc::Receiver<Message>,
     events_tx: mpsc::Sender<Message>,
     imap_sessions: HashMap<Box<str>, Arc<Mutex<imap::Session<TlsStream<TcpStream>>>>>,
+}
+
+pub(crate) struct Envelope {
+    pub(crate) uid: u32,
+    pub(crate) subject: Box<str>,
+    pub(crate) timestamp: OffsetDateTime,
+    pub(crate) addresses: Vec<Address>, // from address for inboxes, to address for outboxes
+    pub(crate) seen: bool,
+    pub(crate) id: Option<Box<str>>,
+    pub(crate) in_reply_to: Option<Box<str>>,
+    pub(crate) thread_root: Option<Box<str>>,
+}
+
+enum EmailSelector {
+    Latest,
+    Before { ts: OffsetDateTime, uid: u32 },
+    After { ts: OffsetDateTime, uid: u32 },
 }
 
 impl App {
@@ -51,16 +69,20 @@ impl App {
             model: Model {
                 running_state: RunningState::MainView,
                 active_pane: ActivePane::Mailboxes,
-                mbox_list: MailboxesList {
+                status_bar_text: String::new(),
+                mbox_pane: MailboxesList {
                     mailboxes,
                     selected_mailbox: 0,
                     list_state: ListState::default(),
+                    focused: true,
                 },
-                emails_list: EmailsList {
-                    emails: Vec::with_capacity(10),
+                emails_pane: EmailsList {
+                    emails: VecDeque::new(),
                     selected_email: 0,
                     table_state: TableState::default(),
+                    focused: false,
                 },
+                content_pane: Content { focused: false },
                 reindex_status: ReindexStatus::default(),
             },
             db: Arc::new(Mutex::new(db)),
@@ -72,8 +94,8 @@ impl App {
                     .map(|(account, sess)| (account, Arc::new(Mutex::new(sess)))),
             ),
         };
-        r.model.mbox_list.select_next_mailbox();
-        r.model.emails_list.table_state.select_next();
+        r.model.mbox_pane.select_next_mailbox();
+        r.model.emails_pane.table_state.select_next();
 
         Ok(r)
     }
@@ -116,7 +138,7 @@ impl App {
     fn view(&mut self, frame: &mut Frame) {
         let layout =
             Layout::vertical([Constraint::Fill(1), Constraint::Max(1)]).split(frame.area());
-        // self.status_bar(frame, layout[1]);
+        self.status_bar(frame, layout[1]);
         match &self.model.running_state {
             RunningState::MainView => self.main_view(frame, layout[0]),
             RunningState::Done => {}
@@ -125,11 +147,23 @@ impl App {
         }
     }
 
+    fn status_bar(&self, frame: &mut Frame, area: Rect) {
+        let c = Paragraph::new(self.model.status_bar_text.as_str()).style(
+            Style::default()
+                .bg(COLOR_SCHEME.status_bar_bg)
+                .fg(COLOR_SCHEME.status_bar_fg),
+        );
+        frame.render_widget(c, area);
+    }
+
     fn main_view(&mut self, frame: &mut Frame, area: Rect) {
         let columns =
             Layout::horizontal([Constraint::Percentage(30), Constraint::Fill(1)]).split(area);
-        frame.render_widget(&mut self.model.mbox_list, columns[0]);
-        frame.render_widget(&mut self.model.emails_list, columns[1]);
+        let right_rows = Layout::vertical([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .split(columns[1]);
+        frame.render_widget(&mut self.model.mbox_pane, columns[0]);
+        frame.render_widget(&mut self.model.emails_pane, right_rows[0]);
+        frame.render_widget(&mut self.model.content_pane, right_rows[1]);
     }
 
     fn event_poller(key_events: mpsc::Sender<Message>) {
@@ -197,20 +231,22 @@ impl App {
         match self.model.running_state {
             RunningState::MainView => match key.code {
                 KeyCode::Char('q') => Some(Message::Quit),
-                KeyCode::Down | KeyCode::Char('j')
-                    if self.model.active_pane == ActivePane::Mailboxes =>
-                {
-                    Some(Message::NextMailbox)
-                }
-                KeyCode::Up | KeyCode::Char('k')
-                    if self.model.active_pane == ActivePane::Mailboxes =>
-                {
-                    Some(Message::PrevMailbox)
-                }
+                KeyCode::Down | KeyCode::Char('j') => match self.model.active_pane {
+                    ActivePane::Mailboxes => Some(Message::NextMailbox),
+                    ActivePane::Emails => Some(Message::NextMessage),
+                    ActivePane::Content => None,
+                },
+                KeyCode::Up | KeyCode::Char('k') => match self.model.active_pane {
+                    ActivePane::Mailboxes => Some(Message::PrevMailbox),
+                    ActivePane::Emails => Some(Message::PrevMessage),
+                    ActivePane::Content => None,
+                },
                 KeyCode::Char('r') | KeyCode::F(5) => {
-                    let (account, mailbox) = self.model.mbox_list.current_mailbox();
+                    let (account, mailbox) = self.model.mbox_pane.current_mailbox();
                     Some(Message::ReindexMailbox { account, mailbox })
                 }
+                KeyCode::Tab => Some(Message::FocusNext),
+                KeyCode::BackTab => Some(Message::FocusPrev),
                 _ => None,
             },
             RunningState::Done => None,
@@ -228,10 +264,10 @@ impl App {
             Message::NextMailbox => self.select_next_mailbox()?,
 
             Message::PrevMailbox => self.select_prev_mailbox()?,
-            Message::NextMessage => todo!(),
-            Message::PrevMessage => todo!(),
-            Message::FocusNext => todo!(),
-            Message::FocusPrev => todo!(),
+            Message::NextMessage => self.select_next_message()?,
+            Message::PrevMessage => self.select_prev_message()?,
+            Message::FocusNext => self.change_focus(true)?,
+            Message::FocusPrev => self.change_focus(false)?,
             Message::Quit => {
                 self.model.running_state = RunningState::Done;
                 None
@@ -249,33 +285,109 @@ impl App {
         })
     }
 
+    fn change_focus(&mut self, forward: bool) -> Result<Option<Message>> {
+        self.model.active_pane = if forward {
+            match self.model.active_pane {
+                ActivePane::Mailboxes => ActivePane::Emails,
+                ActivePane::Emails => ActivePane::Content,
+                ActivePane::Content => ActivePane::Mailboxes,
+            }
+        } else {
+            match self.model.active_pane {
+                ActivePane::Mailboxes => ActivePane::Content,
+                ActivePane::Emails => ActivePane::Mailboxes,
+                ActivePane::Content => ActivePane::Emails,
+            }
+        };
+        self.model.mbox_pane.focused = false;
+        self.model.emails_pane.focused = false;
+        self.model.content_pane.focused = false;
+        match self.model.active_pane {
+            ActivePane::Mailboxes => self.model.mbox_pane.focused = true,
+            ActivePane::Emails => self.model.emails_pane.focused = true,
+            ActivePane::Content => self.model.content_pane.focused = true,
+        }
+        Ok(None)
+    }
+
+    fn select_next_message(&mut self) -> Result<Option<Message>> {
+        let Some((ts, uid)) = self.model.emails_pane.select_next_email() else {
+            self.model.status_bar_text = format!(
+                "current {} len {}",
+                self.model.emails_pane.selected_email,
+                self.model.emails_pane.emails.len()
+            );
+            return Ok(None);
+        };
+        // widget returned last UID, so we need to load more emails and append them to its list
+        let (account, mailbox) = self.model.mbox_pane.current_mailbox();
+        let emails =
+            self.load_mbox_emails(&account, &mailbox, EmailSelector::Before { ts, uid }, 10)?;
+        self.model.status_bar_text = format!(
+            "current {} len {}, loaded {} more",
+            self.model.emails_pane.selected_email,
+            self.model.emails_pane.emails.len(),
+            emails.len()
+        );
+        self.model.emails_pane.push_back_emails(emails);
+        Ok(None)
+    }
+
+    fn select_prev_message(&mut self) -> Result<Option<Message>> {
+        let Some((ts, uid)) = self.model.emails_pane.select_prev_email() else {
+            self.model.status_bar_text = format!(
+                "current {} len {}",
+                self.model.emails_pane.selected_email,
+                self.model.emails_pane.emails.len()
+            );
+            return Ok(None);
+        };
+        // widget returned first UID, so we need to load more emails and add them to its list
+        let (account, mailbox) = self.model.mbox_pane.current_mailbox();
+        let emails =
+            self.load_mbox_emails(&account, &mailbox, EmailSelector::After { ts, uid }, 10)?;
+
+        self.model.status_bar_text = format!(
+            "current {} len {}, loaded {} more",
+            self.model.emails_pane.selected_email,
+            self.model.emails_pane.emails.len(),
+            emails.len()
+        );
+        self.model.emails_pane.pop_front_emails(emails);
+        Ok(None)
+    }
+
     fn select_next_mailbox(&mut self) -> Result<Option<Message>> {
-        self.model.mbox_list.select_next_mailbox();
+        self.model.mbox_pane.select_next_mailbox();
         let emails = {
             let (account, Some(mailbox)) =
-                &self.model.mbox_list.mailboxes[self.model.mbox_list.selected_mailbox]
+                &self.model.mbox_pane.mailboxes[self.model.mbox_pane.selected_mailbox]
             else {
                 return Err(anyhow!("empty mailbox"));
             };
-            self.load_mbox_emails(account, mailbox)
+            self.load_mbox_emails(account, mailbox, EmailSelector::Latest, 50)
                 .context("loading mailbox")?
         };
-        self.model.emails_list.emails = emails;
+        self.model.emails_pane.emails = VecDeque::from(emails);
+        self.model.emails_pane.selected_email = 0;
+        self.model.emails_pane.table_state.select(Some(0));
         Ok(None)
     }
 
     fn select_prev_mailbox(&mut self) -> Result<Option<Message>> {
-        self.model.mbox_list.select_prev_mailbox();
+        self.model.mbox_pane.select_prev_mailbox();
         let emails = {
             let (account, Some(mailbox)) =
-                &self.model.mbox_list.mailboxes[self.model.mbox_list.selected_mailbox]
+                &self.model.mbox_pane.mailboxes[self.model.mbox_pane.selected_mailbox]
             else {
                 return Err(anyhow!("empty mailbox"));
             };
-            self.load_mbox_emails(account, mailbox)
+            self.load_mbox_emails(account, mailbox, EmailSelector::Latest, 50)
                 .context("loading mailbox")?
         };
-        self.model.emails_list.emails = emails;
+        self.model.emails_pane.emails = VecDeque::from(emails);
+        self.model.emails_pane.selected_email = 0;
+        self.model.emails_pane.table_state.select(Some(0));
         Ok(None)
     }
 
@@ -322,28 +434,44 @@ impl App {
         Ok(None)
     }
 
-    fn load_mbox_emails(&self, account: &str, mailbox: &str) -> Result<Vec<Envelope>> {
+    fn load_mbox_emails(
+        &self,
+        account: &str,
+        mailbox: &str,
+        selector: EmailSelector,
+        amount: i64,
+    ) -> Result<Vec<Envelope>> {
         let db = self.db.lock().expect("poisoned");
-        let mut stmt = db.prepare("SELECT a.name, a.email, message_id, in_reply_to, timestamp, internal_timestamp, subject
+        let condition = match selector {
+            EmailSelector::Latest => "1",
+            EmailSelector::Before { ts, uid } => {
+                &format!("ts <= {} AND e.uid < {}", ts.unix_timestamp(), uid)
+            }
+            EmailSelector::After { ts, uid } => {
+                &format!("ts >= {} AND e.uid > {}", ts.unix_timestamp(), uid)
+            }
+        };
+        let mut stmt = db.prepare(&format!("SELECT e.uid, a.name, a.email, message_id, in_reply_to, COALESCE(timestamp, internal_timestamp) ts, subject
             FROM emails e
             JOIN email_addresses a
-            ON e.mailbox = a.mailbox AND e.uid = a.uid
-            WHERE a.type = 1 AND e.mailbox = ?1
-            LIMIT 10"
+            ON e.account = a.account AND e.mailbox = a.mailbox AND e.uid = a.uid
+            WHERE a.type = 1 AND e.mailbox = ?1 AND ( {} )
+            ORDER BY ts DESC, e.uid DESC
+            LIMIT ?2", condition)
         )?;
-        let mut rows = stmt.query([mailbox])?;
+        let mut rows = stmt.query((mailbox, amount))?;
         let mut result = Vec::with_capacity(10);
         while let Some(row) = rows.next()? {
-            let ts: Option<i64> = row.get(4)?;
-            let internal_ts: i64 = row.get(5)?;
-            let timestamp = OffsetDateTime::from_unix_timestamp(ts.unwrap_or(internal_ts))?;
+            let ts: i64 = row.get(5)?;
+            let timestamp = OffsetDateTime::from_unix_timestamp(ts)?;
             let subject: Option<Box<str>> = row.get(6)?;
             let msg = Envelope {
+                uid: row.get(0)?,
                 subject: subject.unwrap_or(Box::from("")),
                 timestamp,
                 addresses: vec![Address {
-                    email: row.get(1)?,
-                    name: row.get(0)?,
+                    email: row.get(2)?,
+                    name: row.get(1)?,
                 }],
                 seen: false,
                 id: row.get(2)?,
