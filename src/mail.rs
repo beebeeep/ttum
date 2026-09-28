@@ -5,6 +5,7 @@ use std::sync::mpsc;
 
 use anyhow::Context;
 use anyhow::Result;
+use mail_parser::MimeHeaders;
 use native_tls::TlsConnector;
 use native_tls::TlsStream;
 use rusqlite::Connection;
@@ -123,6 +124,7 @@ struct Email {
     in_reply_to: Option<Box<str>>,
     seen: bool,
     body: Option<Box<str>>,
+    attachements: Vec<(Box<str>, Vec<u8>)>,
 }
 
 impl Email {
@@ -151,26 +153,32 @@ impl Email {
             ),
         )?;
         for addr in &self.from {
-            tx.execute("INSERT INTO email_addresses (mailbox, uid, type, name, email) VALUES (?1, ?2, ?3, ?4, ?5)",
-                    (mailbox, self.uid, AddrType::From, &addr.name, &addr.email )).context("inserting email address")?;
+            tx.execute("INSERT INTO email_addresses (account, mailbox, uid, type, name, email) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    (account, mailbox, self.uid, AddrType::From, &addr.name, &addr.email )).context("inserting email address")?;
         }
         for addr in &self.to {
-            tx.execute("INSERT INTO email_addresses (mailbox, uid, type, name, email) VALUES (?1, ?2, ?3, ?4, ?5)",
-                    (mailbox, self.uid, AddrType::To, &addr.name, &addr.email )).context("inserting email address")?;
+            tx.execute("INSERT INTO email_addresses (account, mailbox, uid, type, name, email) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    (account, mailbox, self.uid, AddrType::To, &addr.name, &addr.email )).context("inserting email address")?;
         }
         for addr in &self.sender {
-            tx.execute("INSERT INTO email_addresses (mailbox, uid, type, name, email) VALUES (?1, ?2, ?3, ?4, ?5)",
-                    (mailbox, self.uid, AddrType::Sender, &addr.name, &addr.email )).context("inserting email address")?;
+            tx.execute("INSERT INTO email_addresses (account, mailbox, uid, type, name, email) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    (account, mailbox, self.uid, AddrType::Sender, &addr.name, &addr.email )).context("inserting email address")?;
         }
         for addr in &self.cc {
-            tx.execute("INSERT INTO email_addresses (mailbox, uid, type, name, email) VALUES (?1, ?2, ?3, ?4, ?5)",
-                    (mailbox, self.uid, AddrType::Cc, &addr.name, &addr.email )).context("inserting email address")?;
+            tx.execute("INSERT INTO email_addresses (account, mailbox, uid, type, name, email) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    (account, mailbox, self.uid, AddrType::Cc, &addr.name, &addr.email )).context("inserting email address")?;
         }
         for addr in &self.bcc {
-            tx.execute("INSERT INTO email_addresses (mailbox, uid, type, name, email) VALUES (?1, ?2, ?3, ?4, ?5)",
-                    (mailbox, self.uid, AddrType::Bcc, &addr.name, &addr.email )).context("inserting email address")?;
+            tx.execute("INSERT INTO email_addresses (account, mailbox, uid, type, name, email) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    (account, mailbox, self.uid, AddrType::Bcc, &addr.name, &addr.email )).context("inserting email address")?;
         }
 
+        for (name, data) in &self.attachements {
+            tx.execute(
+                "INSERT INTO email_attachements(account, mailbox, uid, name, content) VALUES(?1, ?2, ?3, ?4, ?5)",
+                (account, mailbox, self.uid, name, data),
+            )?;
+        }
         tx.commit().context("committing transaction")?;
         Ok(())
     }
@@ -309,6 +317,7 @@ pub fn index_email(
             .iter()
             .any(|f| matches!(f, imap::types::Flag::Seen)),
         body: None,
+        attachements: Vec::new(),
     };
 
     m.save_to_db(account, mailbox, db)
@@ -417,8 +426,27 @@ fn fetch_email(
             .iter()
             .any(|f| matches!(f, imap::types::Flag::Seen)),
         body: msg.body_text(0).map(|v| Box::from(v.as_ref())),
+        attachements: msg
+            .attachments()
+            .enumerate()
+            .map(|(idx, a)| {
+                (
+                    a.attachment_name()
+                        .map(Box::from)
+                        .unwrap_or_else(|| format!("attachement-{idx}").into_boxed_str()),
+                    a.contents().to_vec(),
+                )
+            })
+            .collect(),
     };
 
+    // let mut c = 0;
+    // let mut l = 0;
+    // for a in msg.attachments() {
+    //     c += 1;
+    //     l += a.len();
+    // }
+    // println!("{c} attachements, {l} bytes");
     email
         .save_to_db(account, mailbox, db)
         .context("saving message to database")?;

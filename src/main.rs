@@ -38,10 +38,10 @@ fn init_db(file: &str) -> Result<Connection> {
     )?;
     conn.execute(
         "CREATE TABLE IF NOT EXISTS email_attachements(
+            id INTEGER PRIMARY KEY,
             account TEXT, mailbox TEXT, uid INTEGER, name TEXT,
             attachement_type TEXT,
-            content TEXT,
-            PRIMARY KEY (account, mailbox, uid, name),
+            content BLOB,
             FOREIGN KEY (account, mailbox, uid) REFERENCES emails(account, mailbox, uid) ON DELETE CASCADE
         )
         ",
@@ -53,6 +53,10 @@ fn init_db(file: &str) -> Result<Connection> {
     )?;
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_email_ts ON emails(account, mailbox, timestamp)",
+        (),
+    )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_email_attachement ON email_attachements(account, mailbox, uid, name)",
         (),
     )?;
     Ok(conn)
