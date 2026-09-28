@@ -6,8 +6,7 @@ use crate::{content_widget::Content, emails_widget::EmailsList, mailboxes_widget
 pub(crate) struct ReindexStatus {
     pub(crate) account: Box<str>,
     pub(crate) mailbox: Box<str>,
-    pub(crate) current_uid: u32,
-    pub(crate) max_uid: u32,
+    pub(crate) progress: f64,
     pub(crate) done: bool,
 }
 

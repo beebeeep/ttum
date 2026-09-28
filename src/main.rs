@@ -11,7 +11,7 @@ fn init_db(file: &str) -> Result<Connection> {
         (),
     )?;
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS mailboxes(name TEXT, account TEXT, uid_validity INTEGER, PRIMARY KEY(name))",
+        "CREATE TABLE IF NOT EXISTS mailboxes(name TEXT, account TEXT, uid_validity INTEGER, PRIMARY KEY(account, name))",
         (),
     )?;
     conn.execute(
@@ -64,7 +64,14 @@ fn init_db(file: &str) -> Result<Connection> {
 
 fn main() -> Result<()> {
     let db = init_db("ttum.db").context("initializing database")?;
-    let app = App::load(db)?;
+    let matches = clap::Command::new("ttum mail client")
+        .arg(
+            clap::Arg::new("update-mailboxes")
+                .short('m')
+                .action(clap::ArgAction::SetTrue),
+        )
+        .get_matches();
+    let app = App::load(db, matches.get_flag("update-mailboxes"))?;
     let r = app.run();
     ratatui::restore();
     if let Err(e) = r {

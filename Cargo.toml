@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
+clap = "4.6.7"
 crossterm = "0.29.0"
 imap = "2.4.1"
 imap-proto = "0.10.2"

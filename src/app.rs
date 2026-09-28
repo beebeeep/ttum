@@ -53,12 +53,12 @@ enum EmailSelector {
 }
 
 impl App {
-    pub fn load(db: rusqlite::Connection) -> Result<Self> {
+    pub fn load(mut db: rusqlite::Connection, update: bool) -> Result<Self> {
         let mut sessions = mail::connect_to_accounts(&db).context("connecting to all accounts")?;
         let mut mailboxes = Vec::with_capacity(sessions.len());
         for (account, conn) in sessions.iter_mut() {
             let mailbox_names =
-                get_mailboxes(account, false, conn, &db).context("listing mailboxes")?;
+                get_mailboxes(account, update, conn, &mut db).context("listing mailboxes")?;
             mailboxes.push((account.clone(), None));
             for n in mailbox_names {
                 mailboxes.push((account.clone(), Some(n.into_boxed_str())));
@@ -184,7 +184,7 @@ impl App {
 
     fn reindex_view(&mut self, frame: &mut Frame, area: Rect) {
         self.main_view(frame, area);
-        let window_area = centered_rect(area, 50, 10);
+        let window_area = centered_rect(area, 50, 10, 6, 20);
         let style = Style::default()
             .fg(COLOR_SCHEME.text_fg)
             .bg(COLOR_SCHEME.text_bg);
@@ -198,17 +198,9 @@ impl App {
             .title_alignment(ratatui::layout::Alignment::Left)
             .border_type(ratatui::widgets::BorderType::Rounded)
             .border_style(style);
-        let layout = Layout::horizontal(vec![Constraint::Fill(1), Constraint::Fill(9)])
+        let layout = Layout::horizontal(vec![Constraint::Fill(1)])
             .spacing(1)
             .split(block.inner(window_area).inner(Margin::new(2, 2)));
-        let label = Paragraph::new(format!("{}/{}", status.current_uid, status.max_uid))
-            .style(style)
-            .alignment(ratatui::layout::HorizontalAlignment::Left);
-        let ratio = if status.max_uid != 0 {
-            status.current_uid as f64 / status.max_uid as f64
-        } else {
-            0f64
-        };
         let bar = LineGauge::default()
             .style(style)
             .filled_symbol("⣿")
@@ -219,12 +211,11 @@ impl App {
                     .bg(COLOR_SCHEME.progress_bg),
             )
             .unfilled_style(style)
-            .ratio(ratio);
+            .ratio(self.model.reindex_status.progress);
 
         frame.render_widget(Clear::default(), window_area);
         frame.render_widget(block, window_area);
-        frame.render_widget(label, layout[0]);
-        frame.render_widget(bar, layout[1]);
+        frame.render_widget(bar, layout[0]);
     }
 
     fn handle_key(&self, key: event::KeyEvent) -> Option<Message> {
@@ -421,8 +412,7 @@ impl App {
                     let _ = notifications.send(Message::ReindexStatus(ReindexStatus {
                         account: account,
                         mailbox: mailbox,
-                        current_uid: 0,
-                        max_uid: 0,
+                        progress: 0.0,
                         done: true,
                     }));
                 }
@@ -455,11 +445,11 @@ impl App {
             FROM emails e
             JOIN email_addresses a
             ON e.account = a.account AND e.mailbox = a.mailbox AND e.uid = a.uid
-            WHERE a.type = 1 AND e.mailbox = ?1 AND ( {} )
+            WHERE a.type = 1 AND e.account = ?1 AND e.mailbox = ?2 AND ( {} )
             ORDER BY ts DESC, e.uid DESC
-            LIMIT ?2", condition)
+            LIMIT ?3", condition)
         )?;
-        let mut rows = stmt.query((mailbox, amount))?;
+        let mut rows = stmt.query((account, mailbox, amount))?;
         let mut result = Vec::with_capacity(10);
         while let Some(row) = rows.next()? {
             let ts: i64 = row.get(5)?;

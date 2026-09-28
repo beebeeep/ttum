@@ -334,16 +334,27 @@ pub fn reindex_mailbox(
     .context("cleaning up db")?;
 
     let mbox = session.select(mailbox).context("opening mailbox")?;
-    let max_uid = mbox.uid_next.context("no next uid?")?;
+    let uid_result = session.uid_fetch("1:*", "FLAGS").context("fetching uids")?;
+    let uids: Vec<u32> = uid_result.into_iter().map(|v| v.uid.unwrap()).collect();
+    db.execute(
+        "UPDATE mailboxes SET uid_validity = ?1 WHERE account = ?2 AND name = ?3",
+        (
+            mbox.uid_validity.context("no uid_validity")?,
+            account,
+            mailbox,
+        ),
+    )?;
 
-    for uid in 1..max_uid {
+    let mut count = 0;
+    let sz = uids.len() as f64;
+    for uid in uids {
+        count += 1;
         fetch_email(account, mailbox, uid, session, db)?;
         if uid % 10 == 0 {
             let _ = notifications.send(Message::ReindexStatus(crate::model::ReindexStatus {
                 account: Box::from(account),
                 mailbox: Box::from(mailbox),
-                current_uid: uid,
-                max_uid,
+                progress: count as f64 / sz,
                 done: false,
             }));
         }
@@ -447,7 +458,7 @@ pub(crate) fn get_mailboxes(
     account: &str,
     update: bool,
     session: &mut imap::Session<TlsStream<TcpStream>>,
-    db: &Connection,
+    db: &mut Connection,
 ) -> Result<Vec<String>> {
     let mut mailboxes = Vec::with_capacity(3);
     if !update {
@@ -459,18 +470,23 @@ pub(crate) fn get_mailboxes(
         return Ok(mailboxes);
     }
     let list = session.list(None, Some("*")).context("listing mailboxes")?;
-    let mut stmt = db.prepare(
-        "
+    let tx = db.transaction().context("starting transaction")?;
+    {
+        let mut stmt = tx.prepare(
+            "
         INSERT into mailboxes (name, account, uid_validity)
         VALUES (?1, ?2, ?3)
-        ON CONFLICT (name) DO UPDATE SET uid_validity=excluded.uid_validity",
-    )?;
-    for v in &list {
-        let mailbox = utf7_imap::decode_utf7_imap(String::from(v.name()));
-        let mbox = session.select(v.name()).context("opening mailbox")?;
-        stmt.execute((&mailbox, account, mbox.uid_validity))?;
-        mailboxes.push(mailbox);
+        ON CONFLICT (account, name) DO UPDATE SET uid_validity=excluded.uid_validity",
+        )?;
+        for v in &list {
+            let mailbox = utf7_imap::decode_utf7_imap(String::from(v.name()));
+            let mbox = session.select(v.name()).context("opening mailbox")?;
+            stmt.execute((&mailbox, account, mbox.uid_validity))?;
+            println!("{account} {mailbox}");
+            mailboxes.push(mailbox);
+        }
     }
+    tx.commit().context("committing transaction")?;
     Ok(mailboxes)
 }
 
