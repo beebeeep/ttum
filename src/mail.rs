@@ -346,15 +346,17 @@ pub fn reindex_mailbox(
     )?;
 
     let mut count = 0;
-    let sz = uids.len() as f64;
+    let sz = uids.len();
     for uid in uids {
         count += 1;
+        // TODO: batch this: vvvv
         fetch_email(account, mailbox, uid, session, db)?;
         if uid % 10 == 0 {
             let _ = notifications.send(Message::ReindexStatus(crate::model::ReindexStatus {
                 account: Box::from(account),
                 mailbox: Box::from(mailbox),
-                progress: count as f64 / sz,
+                current: count,
+                total: sz,
                 done: false,
             }));
         }

@@ -198,9 +198,17 @@ impl App {
             .title_alignment(ratatui::layout::Alignment::Left)
             .border_type(ratatui::widgets::BorderType::Rounded)
             .border_style(style);
-        let layout = Layout::horizontal(vec![Constraint::Fill(1)])
+        let layout = Layout::horizontal(vec![Constraint::Fill(1), Constraint::Fill(9)])
             .spacing(1)
             .split(block.inner(window_area).inner(Margin::new(2, 2)));
+        let label = Paragraph::new(format!("{}/{}", status.current, status.total))
+            .style(style)
+            .alignment(ratatui::layout::HorizontalAlignment::Left);
+        let ratio = if status.total != 0 {
+            status.current as f64 / status.total as f64
+        } else {
+            0f64
+        };
         let bar = LineGauge::default()
             .style(style)
             .filled_symbol("⣿")
@@ -211,11 +219,12 @@ impl App {
                     .bg(COLOR_SCHEME.progress_bg),
             )
             .unfilled_style(style)
-            .ratio(self.model.reindex_status.progress);
+            .ratio(ratio);
 
         frame.render_widget(Clear::default(), window_area);
         frame.render_widget(block, window_area);
-        frame.render_widget(bar, layout[0]);
+        frame.render_widget(label, layout[0]);
+        frame.render_widget(bar, layout[1]);
     }
 
     fn handle_key(&self, key: event::KeyEvent) -> Option<Message> {
@@ -412,7 +421,8 @@ impl App {
                     let _ = notifications.send(Message::ReindexStatus(ReindexStatus {
                         account: account,
                         mailbox: mailbox,
-                        progress: 0.0,
+                        current: 0,
+                        total: 0,
                         done: true,
                     }));
                 }
