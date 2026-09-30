@@ -12,7 +12,7 @@ use crate::{
     emails_widget::EmailsList,
     mail::{self, Address, Email, get_mailboxes},
     mailboxes_widget::MailboxesList,
-    model::{self, ActivePane, Message, Model, ReindexStatus, RunningState},
+    model::{self, ActivePane, Message, Model, ReindexStatus, RunningState, ScrollDirection},
     util::centered_rect,
 };
 use anyhow::{Context, Result, anyhow};
@@ -231,16 +231,12 @@ impl App {
         match self.model.running_state {
             RunningState::MainView => match key.code {
                 KeyCode::Char('q') => Some(Message::Quit),
-                KeyCode::Down | KeyCode::Char('j') => match self.model.active_pane {
-                    ActivePane::Mailboxes => Some(Message::NextMailbox),
-                    ActivePane::Emails => Some(Message::NextMessage),
-                    ActivePane::Content => None,
-                },
-                KeyCode::Up | KeyCode::Char('k') => match self.model.active_pane {
-                    ActivePane::Mailboxes => Some(Message::PrevMailbox),
-                    ActivePane::Emails => Some(Message::PrevMessage),
-                    ActivePane::Content => None,
-                },
+                KeyCode::Left | KeyCode::Char('h') => Some(Message::Scroll(ScrollDirection::Left)),
+                KeyCode::Down | KeyCode::Char('j') => Some(Message::Scroll(ScrollDirection::Down)),
+                KeyCode::Up | KeyCode::Char('k') => Some(Message::Scroll(ScrollDirection::Up)),
+                KeyCode::Right | KeyCode::Char('l') => {
+                    Some(Message::Scroll(ScrollDirection::Right))
+                }
                 KeyCode::Char('r') | KeyCode::F(5) => {
                     let (account, mailbox) = self.model.mbox_pane.current_mailbox();
                     Some(Message::ReindexMailbox { account, mailbox })
@@ -262,6 +258,7 @@ impl App {
         Ok(match msg {
             Message::KeyPress(k) => self.handle_key(k),
             Message::NextMailbox => self.select_next_mailbox()?,
+            Message::Scroll(direction) => self.handle_scroll(direction)?,
 
             Message::PrevMailbox => self.select_prev_mailbox()?,
             Message::NextMessage => self.select_next_message()?,
@@ -283,6 +280,15 @@ impl App {
                 self.start_mailbox_reindex(&account, &mailbox)?
             }
         })
+    }
+
+    fn handle_scroll(&mut self, d: ScrollDirection) -> Result<Option<Message>> {
+        match self.model.active_pane {
+            ActivePane::Mailboxes => todo!(),
+            ActivePane::Emails => todo!(),
+            ActivePane::Content => todo!(),
+        }
+        todo!()
     }
 
     fn change_focus(&mut self, forward: bool) -> Result<Option<Message>> {

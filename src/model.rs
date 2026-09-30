@@ -40,6 +40,14 @@ pub(crate) enum RunningState {
 }
 
 #[derive(Debug)]
+pub(crate) enum ScrollDirection {
+    Up,
+    Down,
+    Right,
+    Left,
+}
+
+#[derive(Debug)]
 pub(crate) enum Message {
     KeyPress(KeyEvent),
     ReindexMailbox {
@@ -47,10 +55,7 @@ pub(crate) enum Message {
         mailbox: Box<str>,
     },
     ReindexStatus(ReindexStatus),
-    NextMailbox,
-    PrevMailbox,
-    NextMessage,
-    PrevMessage,
+    Scroll(ScrollDirection),
     FocusNext,
     FocusPrev,
     Quit,

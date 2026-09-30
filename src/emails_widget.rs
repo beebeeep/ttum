@@ -1,5 +1,6 @@
 use std::{collections::VecDeque, time::Duration};
 
+use crossterm::event::KeyCode;
 use ratatui::{
     layout::Constraint,
     style::Style,
@@ -26,6 +27,14 @@ pub(crate) struct EmailsList {
 }
 
 impl EmailsList {
+    pub(crate) fn handle_key(&mut self, key: KeyCode) {
+        match key {
+            KeyCode::Left => self.table_state.scroll_left_by(1),
+            KeyCode::Right => self.table_state.scroll_right_by(1),
+            _ => {}
+        }
+    }
+
     pub(crate) fn select_next_email(&mut self) -> Option<(OffsetDateTime, u32)> {
         self.selected_email += 1;
         self.table_state.select(Some(self.selected_email));
