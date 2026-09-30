@@ -26,8 +26,8 @@ use ratatui::{
 };
 use time::OffsetDateTime;
 
-pub struct App<'a> {
-    model: Model<'a>,
+pub struct App {
+    model: Model,
 
     db: Arc<Mutex<rusqlite::Connection>>,
     events_rx: mpsc::Receiver<Message>,
@@ -52,7 +52,7 @@ enum EmailSelector {
     After { ts: OffsetDateTime, uid: u32 },
 }
 
-impl<'a> App<'a> {
+impl App {
     pub fn load(mut db: rusqlite::Connection, update: bool) -> Result<Self> {
         let mut sessions = mail::connect_to_accounts(&db).context("connecting to all accounts")?;
         let mut mailboxes = Vec::with_capacity(sessions.len());
@@ -82,7 +82,7 @@ impl<'a> App<'a> {
                     table_state: TableState::default(),
                     focused: false,
                 },
-                content_pane: Content::new(""),
+                content_pane: Content::new(Box::from("")),
                 reindex_status: ReindexStatus::default(),
             },
             db: Arc::new(Mutex::new(db)),
@@ -184,7 +184,7 @@ impl<'a> App<'a> {
 
     fn reindex_view(&mut self, frame: &mut Frame, area: Rect) {
         self.main_view(frame, area);
-        let window_area = centered_rect(area, 50, 10, 6, 20);
+        let window_area = centered_rect(area, 50, 10, 8, 20);
         let style = Style::default()
             .fg(COLOR_SCHEME.text_fg)
             .bg(COLOR_SCHEME.text_bg);
@@ -320,7 +320,7 @@ impl<'a> App<'a> {
             selected_email.uid,
             &self.db.lock().expect("poisoned"),
         )?;
-        self.model.content_pane = Content::new(&mail.body.unwrap_or_default());
+        self.model.content_pane = Content::new(mail.body.unwrap_or_default());
         match last_email {
             None => {
                 self.model.status_bar_text = format!(
@@ -361,7 +361,7 @@ impl<'a> App<'a> {
             selected_email.uid,
             &self.db.lock().expect("poisoned"),
         )?;
-        self.model.content_pane = Content::new(&mail.body.unwrap_or_default());
+        self.model.content_pane = Content::new(mail.body.unwrap_or_default());
         match first_email {
             None => {
                 self.model.status_bar_text = format!(

@@ -6,14 +6,14 @@ use ratatui::{
 
 use crate::color_scheme::COLOR_SCHEME;
 
-pub(crate) struct Content<'a> {
+pub(crate) struct Content {
     pub(crate) focused: bool,
-    pub(crate) content: &'a str,
+    pub(crate) content: Box<str>,
     scroll: (u16, u16),
 }
 
-impl<'a> Content<'a> {
-    pub(crate) fn new(content: &'a str) -> Self {
+impl Content {
+    pub(crate) fn new(content: Box<str>) -> Self {
         Self {
             focused: false,
             content,
@@ -22,7 +22,7 @@ impl<'a> Content<'a> {
     }
 }
 
-impl<'a> Widget for &mut Content<'a> {
+impl Widget for &mut Content {
     fn render(self, area: ratatui::prelude::Rect, buf: &mut ratatui::prelude::Buffer)
     where
         Self: Sized,
@@ -45,7 +45,7 @@ impl<'a> Widget for &mut Content<'a> {
             .border_type(ratatui::widgets::BorderType::Rounded)
             .border_style(default_style);
 
-        let paragraph = Paragraph::new(self.content)
+        let paragraph = Paragraph::new(self.content.as_ref())
             .style(default_style)
             .wrap(Wrap { trim: true })
             .scroll(self.scroll);

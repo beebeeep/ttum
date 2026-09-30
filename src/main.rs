@@ -7,7 +7,7 @@ fn init_db(file: &str) -> Result<Connection> {
     conn.pragma_update(None, "foreign_keys", "ON")
         .context("enabling FKs")?;
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS accounts(name TEXT, host TEXT, port INTEGER, login TEXT, password TEXT, PRIMARY KEY(name))",
+        "CREATE TABLE IF NOT EXISTS accounts(name TEXT, host TEXT, port INTEGER, login TEXT, password TEXT, starttls INTEGER, PRIMARY KEY(name))",
         (),
     )?;
     conn.execute(
