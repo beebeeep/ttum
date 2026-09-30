@@ -11,7 +11,7 @@ pub(crate) struct ReindexStatus {
     pub(crate) done: bool,
 }
 
-pub(crate) struct Model {
+pub(crate) struct Model<'a> {
     pub(crate) running_state: RunningState,
     pub(crate) active_pane: ActivePane,
     pub(crate) reindex_status: ReindexStatus,
@@ -19,7 +19,7 @@ pub(crate) struct Model {
 
     pub(crate) mbox_pane: MailboxesList,
     pub(crate) emails_pane: EmailsList,
-    pub(crate) content_pane: Content,
+    pub(crate) content_pane: Content<'a>,
 }
 
 #[derive(Default, PartialEq)]

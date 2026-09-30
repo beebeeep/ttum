@@ -110,24 +110,63 @@ impl Address {
     }
 }
 
-struct Email {
-    uid: u32,
-    message_id: Option<Box<str>>,
-    timestamp: Option<OffsetDateTime>,
-    internal_timestamp: OffsetDateTime,
-    from: Vec<Address>,
-    to: Vec<Address>,
-    sender: Vec<Address>,
-    cc: Vec<Address>,
-    bcc: Vec<Address>,
-    subject: Option<Box<str>>,
-    in_reply_to: Option<Box<str>>,
-    seen: bool,
-    body: Option<Box<str>>,
-    attachements: Vec<(Box<str>, Vec<u8>)>,
+pub(crate) struct Email {
+    pub(crate) uid: u32,
+    pub(crate) message_id: Option<Box<str>>,
+    pub(crate) timestamp: Option<OffsetDateTime>,
+    pub(crate) internal_timestamp: OffsetDateTime,
+    pub(crate) from: Vec<Address>,
+    pub(crate) to: Vec<Address>,
+    pub(crate) sender: Vec<Address>,
+    pub(crate) cc: Vec<Address>,
+    pub(crate) bcc: Vec<Address>,
+    pub(crate) subject: Option<Box<str>>,
+    pub(crate) in_reply_to: Option<Box<str>>,
+    pub(crate) seen: bool,
+    pub(crate) body: Option<Box<str>>,
+    pub(crate) attachements: Vec<(Box<str>, Vec<u8>)>,
 }
 
 impl Email {
+    pub(crate) fn load_from_db(
+        account: &str,
+        mailbox: &str,
+        uid: u32,
+        db: &Connection,
+    ) -> Result<Self> {
+        let email = db
+            .query_one(
+                "SELECT
+                     message_id, timestamp, internal_timestamp, subject, in_reply_to, seen, body
+                 FROM emails
+                 WHERE account=?1 AND mailbox=?2 AND uid=?3",
+                (account, mailbox, uid),
+                |r| {
+                    Ok(Email {
+                        uid,
+                        message_id: r.get(0)?,
+                        timestamp: match r.get(1)? {
+                            Some(v) => OffsetDateTime::from_unix_timestamp(v).ok(),
+                            None => None,
+                        },
+                        internal_timestamp: OffsetDateTime::from_unix_timestamp(r.get(2)?).unwrap(),
+                        from: Vec::with_capacity(1),
+                        to: Vec::with_capacity(1),
+                        sender: Vec::with_capacity(1),
+                        cc: Vec::new(),
+                        bcc: Vec::new(),
+                        subject: r.get(3)?,
+                        in_reply_to: r.get(4)?,
+                        seen: r.get(5)?,
+                        body: r.get(6)?,
+                        attachements: Vec::new(),
+                    })
+                },
+            )
+            .context("loading email metadata")?;
+        Ok(email)
+    }
+
     fn save_to_db(&self, account: &str, mailbox: &str, db: &mut Connection) -> Result<()> {
         let tx = db.transaction().context("starting transaction")?;
         tx.execute(

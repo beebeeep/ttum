@@ -10,7 +10,7 @@ use crate::{
     color_scheme::COLOR_SCHEME,
     content_widget::Content,
     emails_widget::EmailsList,
-    mail::{self, Address, get_mailboxes},
+    mail::{self, Address, Email, get_mailboxes},
     mailboxes_widget::MailboxesList,
     model::{self, ActivePane, Message, Model, ReindexStatus, RunningState},
     util::centered_rect,
@@ -26,8 +26,8 @@ use ratatui::{
 };
 use time::OffsetDateTime;
 
-pub struct App {
-    model: Model,
+pub struct App<'a> {
+    model: Model<'a>,
 
     db: Arc<Mutex<rusqlite::Connection>>,
     events_rx: mpsc::Receiver<Message>,
@@ -52,7 +52,7 @@ enum EmailSelector {
     After { ts: OffsetDateTime, uid: u32 },
 }
 
-impl App {
+impl<'a> App<'a> {
     pub fn load(mut db: rusqlite::Connection, update: bool) -> Result<Self> {
         let mut sessions = mail::connect_to_accounts(&db).context("connecting to all accounts")?;
         let mut mailboxes = Vec::with_capacity(sessions.len());
@@ -82,7 +82,7 @@ impl App {
                     table_state: TableState::default(),
                     focused: false,
                 },
-                content_pane: Content { focused: false },
+                content_pane: Content::new(""),
                 reindex_status: ReindexStatus::default(),
             },
             db: Arc::new(Mutex::new(db)),
@@ -94,8 +94,8 @@ impl App {
                     .map(|(account, sess)| (account, Arc::new(Mutex::new(sess)))),
             ),
         };
-        r.model.mbox_pane.select_next_mailbox();
-        r.model.emails_pane.table_state.select_next();
+        r.select_next_mailbox()?;
+        // r.model.emails_pane.table_state.select_next();
 
         Ok(r)
     }
@@ -311,49 +311,85 @@ impl App {
     }
 
     fn select_next_message(&mut self) -> Result<Option<Message>> {
-        let Some((ts, uid)) = self.model.emails_pane.select_next_email() else {
-            self.model.status_bar_text = format!(
-                "current {} len {}",
-                self.model.emails_pane.selected_email,
-                self.model.emails_pane.emails.len()
-            );
-            return Ok(None);
-        };
-        // widget returned last UID, so we need to load more emails and append them to its list
+        let last_email = self.model.emails_pane.select_next_email();
+        let selected_email = &self.model.emails_pane.emails[self.model.emails_pane.selected_email];
         let (account, mailbox) = self.model.mbox_pane.current_mailbox();
-        let emails =
-            self.load_mbox_emails(&account, &mailbox, EmailSelector::Before { ts, uid }, 10)?;
-        self.model.status_bar_text = format!(
-            "current {} len {}, loaded {} more",
-            self.model.emails_pane.selected_email,
-            self.model.emails_pane.emails.len(),
-            emails.len()
-        );
-        self.model.emails_pane.push_back_emails(emails);
+        let mail = Email::load_from_db(
+            &account,
+            &mailbox,
+            selected_email.uid,
+            &self.db.lock().expect("poisoned"),
+        )?;
+        self.model.content_pane = Content::new(&mail.body.unwrap_or_default());
+        match last_email {
+            None => {
+                self.model.status_bar_text = format!(
+                    "current {} len {}",
+                    self.model.emails_pane.selected_email,
+                    self.model.emails_pane.emails.len()
+                );
+                return Ok(None);
+            }
+            Some((ts, uid)) => {
+                // widget returned last UID, so we need to load more emails and append them to its list
+                let (account, mailbox) = self.model.mbox_pane.current_mailbox();
+                let emails = self.load_mbox_emails(
+                    &account,
+                    &mailbox,
+                    EmailSelector::Before { ts, uid },
+                    10,
+                )?;
+                self.model.status_bar_text = format!(
+                    "current {} len {}, loaded {} more",
+                    self.model.emails_pane.selected_email,
+                    self.model.emails_pane.emails.len(),
+                    emails.len()
+                );
+                self.model.emails_pane.push_back_emails(emails);
+            }
+        }
         Ok(None)
     }
 
     fn select_prev_message(&mut self) -> Result<Option<Message>> {
-        let Some((ts, uid)) = self.model.emails_pane.select_prev_email() else {
-            self.model.status_bar_text = format!(
-                "current {} len {}",
-                self.model.emails_pane.selected_email,
-                self.model.emails_pane.emails.len()
-            );
-            return Ok(None);
-        };
-        // widget returned first UID, so we need to load more emails and add them to its list
+        let first_email = self.model.emails_pane.select_prev_email();
+        let selected_email = &self.model.emails_pane.emails[self.model.emails_pane.selected_email];
         let (account, mailbox) = self.model.mbox_pane.current_mailbox();
-        let emails =
-            self.load_mbox_emails(&account, &mailbox, EmailSelector::After { ts, uid }, 10)?;
+        let mail = Email::load_from_db(
+            &account,
+            &mailbox,
+            selected_email.uid,
+            &self.db.lock().expect("poisoned"),
+        )?;
+        self.model.content_pane = Content::new(&mail.body.unwrap_or_default());
+        match first_email {
+            None => {
+                self.model.status_bar_text = format!(
+                    "current {} len {}",
+                    self.model.emails_pane.selected_email,
+                    self.model.emails_pane.emails.len()
+                );
+                return Ok(None);
+            }
+            Some((ts, uid)) => {
+                // widget returned first UID, so we need to load more emails and add them to its list
+                let (account, mailbox) = self.model.mbox_pane.current_mailbox();
+                let emails = self.load_mbox_emails(
+                    &account,
+                    &mailbox,
+                    EmailSelector::After { ts, uid },
+                    10,
+                )?;
 
-        self.model.status_bar_text = format!(
-            "current {} len {}, loaded {} more",
-            self.model.emails_pane.selected_email,
-            self.model.emails_pane.emails.len(),
-            emails.len()
-        );
-        self.model.emails_pane.pop_front_emails(emails);
+                self.model.status_bar_text = format!(
+                    "current {} len {}, loaded {} more",
+                    self.model.emails_pane.selected_email,
+                    self.model.emails_pane.emails.len(),
+                    emails.len()
+                );
+                self.model.emails_pane.pop_front_emails(emails);
+            }
+        }
         Ok(None)
     }
 
