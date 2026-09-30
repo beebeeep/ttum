@@ -4,7 +4,10 @@ use ratatui::{
     widgets::{Block, Paragraph, Widget, Wrap},
 };
 
-use crate::color_scheme::COLOR_SCHEME;
+use crate::{
+    color_scheme::COLOR_SCHEME,
+    model::{Message, ScrollDirection},
+};
 
 pub(crate) struct Content {
     pub(crate) focused: bool,
@@ -19,6 +22,16 @@ impl Content {
             content,
             scroll: (0, 0),
         }
+    }
+
+    pub(crate) fn scroll(&mut self, d: ScrollDirection) -> Option<Message> {
+        match d {
+            ScrollDirection::Up => todo!(),
+            ScrollDirection::Down => todo!(),
+            ScrollDirection::Right => todo!(),
+            ScrollDirection::Left => todo!(),
+        }
+        None
     }
 }
 

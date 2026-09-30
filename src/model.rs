@@ -1,6 +1,14 @@
 use crossterm::event::KeyEvent;
+use time::OffsetDateTime;
 
 use crate::{content_widget::Content, emails_widget::EmailsList, mailboxes_widget::MailboxesList};
+
+#[derive(Debug)]
+pub(crate) enum EmailSelector {
+    Latest,
+    Before { ts: OffsetDateTime, uid: u32 },
+    After { ts: OffsetDateTime, uid: u32 },
+}
 
 #[derive(Default, Debug)]
 pub(crate) struct ReindexStatus {
@@ -54,6 +62,7 @@ pub(crate) enum Message {
         account: Box<str>,
         mailbox: Box<str>,
     },
+    LoadMoreMails(EmailSelector),
     ReindexStatus(ReindexStatus),
     Scroll(ScrollDirection),
     FocusNext,

@@ -4,7 +4,10 @@ use ratatui::{
     widgets::{Block, List, ListState, StatefulWidget, Widget},
 };
 
-use crate::color_scheme::COLOR_SCHEME;
+use crate::{
+    color_scheme::COLOR_SCHEME,
+    model::{Message, ScrollDirection},
+};
 
 pub(crate) struct MailboxesList {
     pub(crate) mailboxes: Vec<(Box<str>, Option<Box<str>>)>,
@@ -14,23 +17,30 @@ pub(crate) struct MailboxesList {
 }
 
 impl MailboxesList {
-    pub(crate) fn select_next_mailbox(&mut self) {
-        self.selected_mailbox = (self.selected_mailbox + 1) % self.mailboxes.len();
-        self.list_state.select(Some(self.selected_mailbox));
-        if self.mailboxes[self.selected_mailbox].1.is_none() {
-            self.select_next_mailbox();
-        }
-    }
-    pub(crate) fn select_prev_mailbox(&mut self) {
-        self.selected_mailbox =
-            (self.selected_mailbox + self.mailboxes.len() - 1) % self.mailboxes.len();
-        self.list_state.select(Some(self.selected_mailbox));
-        if self.mailboxes[self.selected_mailbox].1.is_none() {
-            {
-                self.select_prev_mailbox();
+    pub(crate) fn scroll(&mut self, d: ScrollDirection) -> Option<Message> {
+        match d {
+            ScrollDirection::Up => {
+                self.selected_mailbox = (self.selected_mailbox + 1) % self.mailboxes.len();
+                self.list_state.select(Some(self.selected_mailbox));
+                if self.mailboxes[self.selected_mailbox].1.is_none() {
+                    self.scroll(d);
+                }
             }
-        }
+            ScrollDirection::Down => {
+                self.selected_mailbox =
+                    (self.selected_mailbox + self.mailboxes.len() - 1) % self.mailboxes.len();
+                self.list_state.select(Some(self.selected_mailbox));
+                if self.mailboxes[self.selected_mailbox].1.is_none() {
+                    {
+                        self.scroll(d);
+                    }
+                }
+            }
+            _ => {}
+        };
+        None
     }
+
     pub(crate) fn current_mailbox(&self) -> (Box<str>, Box<str>) {
         (
             self.mailboxes[self.selected_mailbox].0.clone(),

@@ -46,12 +46,6 @@ pub(crate) struct Envelope {
     pub(crate) thread_root: Option<Box<str>>,
 }
 
-enum EmailSelector {
-    Latest,
-    Before { ts: OffsetDateTime, uid: u32 },
-    After { ts: OffsetDateTime, uid: u32 },
-}
-
 impl App {
     pub fn load(mut db: rusqlite::Connection, update: bool) -> Result<Self> {
         let mut sessions = mail::connect_to_accounts(&db).context("connecting to all accounts")?;
@@ -258,7 +252,7 @@ impl App {
         Ok(match msg {
             Message::KeyPress(k) => self.handle_key(k),
             Message::NextMailbox => self.select_next_mailbox()?,
-            Message::Scroll(direction) => self.handle_scroll(direction)?,
+            Message::Scroll(direction) => self.handle_scroll(direction),
 
             Message::PrevMailbox => self.select_prev_mailbox()?,
             Message::NextMessage => self.select_next_message()?,
@@ -282,13 +276,12 @@ impl App {
         })
     }
 
-    fn handle_scroll(&mut self, d: ScrollDirection) -> Result<Option<Message>> {
+    fn handle_scroll(&mut self, d: ScrollDirection) -> Option<Message> {
         match self.model.active_pane {
-            ActivePane::Mailboxes => todo!(),
-            ActivePane::Emails => todo!(),
-            ActivePane::Content => todo!(),
+            ActivePane::Mailboxes => self.model.mbox_pane.scroll(d),
+            ActivePane::Emails => self.model.emails_pane.scroll(d),
+            ActivePane::Content => self.model.content_pane.scroll(d),
         }
-        todo!()
     }
 
     fn change_focus(&mut self, forward: bool) -> Result<Option<Message>> {

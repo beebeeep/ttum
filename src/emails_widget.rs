@@ -9,7 +9,7 @@ use ratatui::{
 };
 use time::{OffsetDateTime, format_description::well_known};
 
-use crate::{app::Envelope, color_scheme::COLOR_SCHEME};
+use crate::{app::Envelope, color_scheme::COLOR_SCHEME, model::{Message, ScrollDirection}};
 
 const FMT_TIME_ONLY: time::format_description::FormatDescriptionV3<'_> =
     time::macros::format_description!(version = 3, "[hour repr:24]:[minute padding:zero]");
@@ -27,12 +27,9 @@ pub(crate) struct EmailsList {
 }
 
 impl EmailsList {
-    pub(crate) fn handle_key(&mut self, key: KeyCode) {
-        match key {
+    pub(crate) fn scroll(&mut self, d: ScrollDirection) -> Option<Message>{
             KeyCode::Left => self.table_state.scroll_left_by(1),
             KeyCode::Right => self.table_state.scroll_right_by(1),
-            _ => {}
-        }
     }
 
     pub(crate) fn select_next_email(&mut self) -> Option<(OffsetDateTime, u32)> {
