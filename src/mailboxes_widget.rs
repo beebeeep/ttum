@@ -38,7 +38,9 @@ impl MailboxesList {
             }
             _ => {}
         };
-        None
+
+        let (account, mailbox) = self.current_mailbox();
+        Some(Message::MailboxChange { account, mailbox })
     }
 
     pub(crate) fn current_mailbox(&self) -> (Box<str>, Box<str>) {

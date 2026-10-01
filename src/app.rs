@@ -12,7 +12,10 @@ use crate::{
     emails_widget::EmailsList,
     mail::{self, Address, Email, get_mailboxes},
     mailboxes_widget::MailboxesList,
-    model::{self, ActivePane, Message, Model, ReindexStatus, RunningState, ScrollDirection},
+    model::{
+        self, ActivePane, EmailSelector, Message, Model, ReindexStatus, RunningState,
+        ScrollDirection,
+    },
     util::centered_rect,
 };
 use anyhow::{Context, Result, anyhow};
@@ -251,12 +254,7 @@ impl App {
     fn update(&mut self, msg: Message) -> Result<Option<Message>> {
         Ok(match msg {
             Message::KeyPress(k) => self.handle_key(k),
-            Message::NextMailbox => self.select_next_mailbox()?,
             Message::Scroll(direction) => self.handle_scroll(direction),
-
-            Message::PrevMailbox => self.select_prev_mailbox()?,
-            Message::NextMessage => self.select_next_message()?,
-            Message::PrevMessage => self.select_prev_message()?,
             Message::FocusNext => self.change_focus(true)?,
             Message::FocusPrev => self.change_focus(false)?,
             Message::Quit => {
@@ -273,6 +271,7 @@ impl App {
             Message::ReindexMailbox { account, mailbox } => {
                 self.start_mailbox_reindex(&account, &mailbox)?
             }
+            Message::LoadMoreMails(email_selector) => todo!(),
         })
     }
 

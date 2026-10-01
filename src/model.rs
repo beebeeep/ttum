@@ -63,6 +63,10 @@ pub(crate) enum Message {
         mailbox: Box<str>,
     },
     LoadMoreMails(EmailSelector),
+    MailboxChange {
+        account: Box<str>,
+        mailbox: Box<str>,
+    },
     ReindexStatus(ReindexStatus),
     Scroll(ScrollDirection),
     FocusNext,
