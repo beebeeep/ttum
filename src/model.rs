@@ -71,5 +71,7 @@ pub(crate) enum Message {
     Scroll(ScrollDirection),
     FocusNext,
     FocusPrev,
+    SelectedEmail(u32),
+    Batch(Vec<Message>),
     Quit,
 }

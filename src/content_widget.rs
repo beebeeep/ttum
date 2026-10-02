@@ -6,30 +6,33 @@ use ratatui::{
 
 use crate::{
     color_scheme::COLOR_SCHEME,
+    mail::Email,
     model::{Message, ScrollDirection},
 };
 
 pub(crate) struct Content {
     pub(crate) focused: bool,
-    pub(crate) content: Box<str>,
+    pub(crate) email: Email,
     scroll: (u16, u16),
 }
 
 impl Content {
-    pub(crate) fn new(content: Box<str>) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             focused: false,
-            content,
+            email: Email::default(),
             scroll: (0, 0),
         }
     }
 
     pub(crate) fn scroll(&mut self, d: ScrollDirection) -> Option<Message> {
         match d {
-            ScrollDirection::Up => todo!(),
-            ScrollDirection::Down => todo!(),
-            ScrollDirection::Right => todo!(),
-            ScrollDirection::Left => todo!(),
+            ScrollDirection::Up => {
+                self.scroll.0 = self.scroll.0.saturating_sub(1);
+            }
+            ScrollDirection::Down => self.scroll.0 += 1,
+            ScrollDirection::Right => self.scroll.1 = self.scroll.1.saturating_sub(1),
+            ScrollDirection::Left => self.scroll.1 += 1,
         }
         None
     }
@@ -58,7 +61,8 @@ impl Widget for &mut Content {
             .border_type(ratatui::widgets::BorderType::Rounded)
             .border_style(default_style);
 
-        let paragraph = Paragraph::new(self.content.as_ref())
+        let body = self.email.body.as_ref().map(AsRef::as_ref).unwrap_or("");
+        let paragraph = Paragraph::new(body)
             .style(default_style)
             .wrap(Wrap { trim: true })
             .scroll(self.scroll);

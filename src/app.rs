@@ -80,7 +80,7 @@ impl App {
                     table_state: TableState::default(),
                     focused: false,
                 },
-                content_pane: Content::new(Box::from("")),
+                content_pane: Content::new(),
                 reindex_status: ReindexStatus::default(),
             },
             db: Arc::new(Mutex::new(db)),
@@ -136,6 +136,13 @@ impl App {
     fn view(&mut self, frame: &mut Frame) {
         let layout =
             Layout::vertical([Constraint::Fill(1), Constraint::Max(1)]).split(frame.area());
+        self.model.status_bar_text = format!(
+            "mailbox {}/{}, emails {}/{}",
+            self.model.mbox_pane.selected_mailbox,
+            self.model.mbox_pane.mailboxes.len(),
+            self.model.emails_pane.selected_email,
+            self.model.emails_pane.emails.len()
+        );
         self.status_bar(frame, layout[1]);
         match &self.model.running_state {
             RunningState::MainView => self.main_view(frame, layout[0]),
@@ -277,7 +284,30 @@ impl App {
                 self.load_more_emails(&account, &mailbox, &selector)?
             }
             Message::MailboxChange { account, mailbox } => self.load_mailbox(&account, &mailbox)?,
+            Message::Batch(messages) => self.process_batch(messages)?,
+            Message::SelectedEmail(uid) => self.load_email(uid)?,
         })
+    }
+
+    fn process_batch(&mut self, messages: Vec<Message>) -> Result<Option<Message>> {
+        let mut results = Vec::new();
+        for msg in messages {
+            if let Some(r) = self.update(msg)? {
+                results.push(r)
+            }
+        }
+        if results.len() > 1 {
+            Ok(Some(Message::Batch(results)))
+        } else {
+            Ok(results.pop())
+        }
+    }
+
+    fn load_email(&mut self, uid: u32) -> Result<Option<Message>> {
+        let (account, mailbox) = self.model.mbox_pane.current_mailbox();
+        let db = self.db.lock().expect("poisoned mutex");
+        self.model.content_pane.email = Email::load_from_db(&account, &mailbox, uid, &db)?;
+        Ok(None)
     }
 
     fn handle_scroll(&mut self, d: ScrollDirection) -> Option<Message> {
@@ -336,8 +366,8 @@ impl App {
         };
         match selector {
             EmailSelector::Latest => {}
-            EmailSelector::Before { .. } => self.model.emails_pane.prepend_emails(emails),
-            EmailSelector::After { .. } => self.model.emails_pane.append_emails(emails),
+            EmailSelector::Before { .. } => self.model.emails_pane.append_emails(emails),
+            EmailSelector::After { .. } => self.model.emails_pane.prepend_emails(emails),
         }
         Ok(None)
     }

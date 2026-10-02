@@ -38,6 +38,7 @@ impl rusqlite::ToSql for AddrType {
     }
 }
 
+#[derive(Debug, Default)]
 pub(crate) struct Address {
     pub(crate) email: Box<str>,
     pub(crate) name: Option<Box<str>>,
@@ -110,6 +111,7 @@ impl Address {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct Email {
     pub(crate) uid: u32,
     pub(crate) message_id: Option<Box<str>>,
@@ -125,6 +127,27 @@ pub(crate) struct Email {
     pub(crate) seen: bool,
     pub(crate) body: Option<Box<str>>,
     pub(crate) attachements: Vec<(Box<str>, Vec<u8>)>,
+}
+
+impl Default for Email {
+    fn default() -> Self {
+        Self {
+            internal_timestamp: OffsetDateTime::now_utc(),
+            from: Default::default(),
+            to: Default::default(),
+            sender: Default::default(),
+            cc: Default::default(),
+            bcc: Default::default(),
+            subject: Default::default(),
+            in_reply_to: Default::default(),
+            seen: Default::default(),
+            body: Default::default(),
+            attachements: Default::default(),
+            uid: 0,
+            message_id: None,
+            timestamp: None,
+        }
+    }
 }
 
 impl Email {
