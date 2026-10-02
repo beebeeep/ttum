@@ -1,4 +1,5 @@
 use std::{
+    arch::x86_64::_mm_mask_reduce_mul_epi8,
     collections::{HashMap, VecDeque},
     net::TcpStream,
     sync::{Arc, Mutex, RwLock, mpsc},
@@ -91,7 +92,7 @@ impl App {
                     .map(|(account, sess)| (account, Arc::new(Mutex::new(sess)))),
             ),
         };
-        r.select_next_mailbox()?;
+
         // r.model.emails_pane.table_state.select_next();
 
         Ok(r)
@@ -271,7 +272,11 @@ impl App {
             Message::ReindexMailbox { account, mailbox } => {
                 self.start_mailbox_reindex(&account, &mailbox)?
             }
-            Message::LoadMoreMails(email_selector) => todo!(),
+            Message::LoadMoreMails(selector) => {
+                let (account, mailbox) = self.model.mbox_pane.current_mailbox();
+                self.load_more_emails(&account, &mailbox, &selector)?
+            }
+            Message::MailboxChange { account, mailbox } => self.load_mailbox(&account, &mailbox)?,
         })
     }
 
@@ -308,98 +313,9 @@ impl App {
         Ok(None)
     }
 
-    fn select_next_message(&mut self) -> Result<Option<Message>> {
-        let last_email = self.model.emails_pane.select_next_email();
-        let selected_email = &self.model.emails_pane.emails[self.model.emails_pane.selected_email];
-        let (account, mailbox) = self.model.mbox_pane.current_mailbox();
-        let mail = Email::load_from_db(
-            &account,
-            &mailbox,
-            selected_email.uid,
-            &self.db.lock().expect("poisoned"),
-        )?;
-        self.model.content_pane = Content::new(mail.body.unwrap_or_default());
-        match last_email {
-            None => {
-                self.model.status_bar_text = format!(
-                    "current {} len {}",
-                    self.model.emails_pane.selected_email,
-                    self.model.emails_pane.emails.len()
-                );
-                return Ok(None);
-            }
-            Some((ts, uid)) => {
-                // widget returned last UID, so we need to load more emails and append them to its list
-                let (account, mailbox) = self.model.mbox_pane.current_mailbox();
-                let emails = self.load_mbox_emails(
-                    &account,
-                    &mailbox,
-                    EmailSelector::Before { ts, uid },
-                    10,
-                )?;
-                self.model.status_bar_text = format!(
-                    "current {} len {}, loaded {} more",
-                    self.model.emails_pane.selected_email,
-                    self.model.emails_pane.emails.len(),
-                    emails.len()
-                );
-                self.model.emails_pane.push_back_emails(emails);
-            }
-        }
-        Ok(None)
-    }
-
-    fn select_prev_message(&mut self) -> Result<Option<Message>> {
-        let first_email = self.model.emails_pane.select_prev_email();
-        let selected_email = &self.model.emails_pane.emails[self.model.emails_pane.selected_email];
-        let (account, mailbox) = self.model.mbox_pane.current_mailbox();
-        let mail = Email::load_from_db(
-            &account,
-            &mailbox,
-            selected_email.uid,
-            &self.db.lock().expect("poisoned"),
-        )?;
-        self.model.content_pane = Content::new(mail.body.unwrap_or_default());
-        match first_email {
-            None => {
-                self.model.status_bar_text = format!(
-                    "current {} len {}",
-                    self.model.emails_pane.selected_email,
-                    self.model.emails_pane.emails.len()
-                );
-                return Ok(None);
-            }
-            Some((ts, uid)) => {
-                // widget returned first UID, so we need to load more emails and add them to its list
-                let (account, mailbox) = self.model.mbox_pane.current_mailbox();
-                let emails = self.load_mbox_emails(
-                    &account,
-                    &mailbox,
-                    EmailSelector::After { ts, uid },
-                    10,
-                )?;
-
-                self.model.status_bar_text = format!(
-                    "current {} len {}, loaded {} more",
-                    self.model.emails_pane.selected_email,
-                    self.model.emails_pane.emails.len(),
-                    emails.len()
-                );
-                self.model.emails_pane.pop_front_emails(emails);
-            }
-        }
-        Ok(None)
-    }
-
-    fn select_next_mailbox(&mut self) -> Result<Option<Message>> {
-        self.model.mbox_pane.select_next_mailbox();
+    fn load_mailbox(&mut self, account: &str, mailbox: &str) -> Result<Option<Message>> {
         let emails = {
-            let (account, Some(mailbox)) =
-                &self.model.mbox_pane.mailboxes[self.model.mbox_pane.selected_mailbox]
-            else {
-                return Err(anyhow!("empty mailbox"));
-            };
-            self.load_mbox_emails(account, mailbox, EmailSelector::Latest, 50)
+            self.load_mbox_emails(account, mailbox, &EmailSelector::Latest, 50)
                 .context("loading mailbox")?
         };
         self.model.emails_pane.emails = VecDeque::from(emails);
@@ -408,20 +324,21 @@ impl App {
         Ok(None)
     }
 
-    fn select_prev_mailbox(&mut self) -> Result<Option<Message>> {
-        self.model.mbox_pane.select_prev_mailbox();
+    fn load_more_emails(
+        &mut self,
+        account: &str,
+        mailbox: &str,
+        selector: &EmailSelector,
+    ) -> Result<Option<Message>> {
         let emails = {
-            let (account, Some(mailbox)) =
-                &self.model.mbox_pane.mailboxes[self.model.mbox_pane.selected_mailbox]
-            else {
-                return Err(anyhow!("empty mailbox"));
-            };
-            self.load_mbox_emails(account, mailbox, EmailSelector::Latest, 50)
+            self.load_mbox_emails(account, mailbox, selector, 10)
                 .context("loading mailbox")?
         };
-        self.model.emails_pane.emails = VecDeque::from(emails);
-        self.model.emails_pane.selected_email = 0;
-        self.model.emails_pane.table_state.select(Some(0));
+        match selector {
+            EmailSelector::Latest => {}
+            EmailSelector::Before { .. } => self.model.emails_pane.prepend_emails(emails),
+            EmailSelector::After { .. } => self.model.emails_pane.append_emails(emails),
+        }
         Ok(None)
     }
 
@@ -472,7 +389,7 @@ impl App {
         &self,
         account: &str,
         mailbox: &str,
-        selector: EmailSelector,
+        selector: &EmailSelector,
         amount: i64,
     ) -> Result<Vec<Envelope>> {
         let db = self.db.lock().expect("poisoned");

@@ -72,33 +72,7 @@ impl EmailsList {
         }
     }
 
-    pub(crate) fn select_next_email(&mut self) -> Option<(OffsetDateTime, u32)> {
-        self.selected_email += 1;
-        self.table_state.select(Some(self.selected_email));
-        if self.selected_email >= self.emails.len() - 1 {
-            self.selected_email = self.emails.len() - 1;
-            self.table_state.select(Some(self.selected_email));
-            return Some((
-                self.emails[self.selected_email].timestamp,
-                self.emails[self.selected_email].uid,
-            ));
-        }
-        None
-    }
-
-    pub(crate) fn select_prev_email(&mut self) -> Option<(OffsetDateTime, u32)> {
-        self.selected_email = self.selected_email.saturating_sub(1);
-        self.table_state.select(Some(self.selected_email));
-        if self.selected_email == 0 {
-            return Some((
-                self.emails[self.selected_email].timestamp,
-                self.emails[self.selected_email].uid,
-            ));
-        }
-        None
-    }
-
-    pub(crate) fn push_back_emails(&mut self, emails: Vec<Envelope>) {
+    pub(crate) fn append_emails(&mut self, emails: Vec<Envelope>) {
         let added = emails.len();
         let o = self.table_state.offset_mut();
         if *o > 0 {
@@ -111,10 +85,10 @@ impl EmailsList {
         self.selected_email -= added;
         for email in emails {
             self.emails.push_back(email);
-            let _ = self.emails.pop_front(); // discard emails from the head
+            let _ = self.emails.pop_front(); // discard email from the head
         }
     }
-    pub(crate) fn pop_front_emails(&mut self, emails: Vec<Envelope>) {
+    pub(crate) fn prepend_emails(&mut self, emails: Vec<Envelope>) {
         let added = emails.len();
         *self.table_state.offset_mut() += added;
         self.table_state
@@ -123,8 +97,8 @@ impl EmailsList {
             .map(|v| *v += added);
         self.selected_email += added;
         for email in emails {
-            self.emails.push_back(email);
-            let _ = self.emails.pop_front(); // discard emails from the head
+            self.emails.push_front(email);
+            let _ = self.emails.pop_back(); // discard email from the tail
         }
     }
 }

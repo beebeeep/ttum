@@ -19,14 +19,14 @@ pub(crate) struct MailboxesList {
 impl MailboxesList {
     pub(crate) fn scroll(&mut self, d: ScrollDirection) -> Option<Message> {
         match d {
-            ScrollDirection::Up => {
+            ScrollDirection::Down => {
                 self.selected_mailbox = (self.selected_mailbox + 1) % self.mailboxes.len();
                 self.list_state.select(Some(self.selected_mailbox));
                 if self.mailboxes[self.selected_mailbox].1.is_none() {
                     self.scroll(d);
                 }
             }
-            ScrollDirection::Down => {
+            ScrollDirection::Up => {
                 self.selected_mailbox =
                     (self.selected_mailbox + self.mailboxes.len() - 1) % self.mailboxes.len();
                 self.list_state.select(Some(self.selected_mailbox));

@@ -3,7 +3,7 @@ use time::OffsetDateTime;
 
 use crate::{content_widget::Content, emails_widget::EmailsList, mailboxes_widget::MailboxesList};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum EmailSelector {
     Latest,
     Before { ts: OffsetDateTime, uid: u32 },
