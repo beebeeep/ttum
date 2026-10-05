@@ -11,7 +11,7 @@ fn init_db(file: &str) -> Result<Connection> {
         (),
     )?;
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS mailboxes(name TEXT, account TEXT, uid_validity INTEGER, PRIMARY KEY(account, name))",
+        "CREATE TABLE IF NOT EXISTS mailboxes(name TEXT, account TEXT, uid_validity INTEGER, highest_mod_seq INTEGER, PRIMARY KEY(account, name))",
         (),
     )?;
     conn.execute(

@@ -9,6 +9,8 @@ clap = "4.6.7"
 crossterm = "0.29.0"
 imap = "2.4.1"
 imap-proto = "0.10.2"
+imap-types = { version = "1.0.0", features = ["ext_condstore_qresync"] }
+io-imap = "0.7.1"
 mail-parser = "0.11.9"
 native-tls = "0.2.18"
 ratatui = { version = "0.30.2", features = ["crossterm_0_29"] }

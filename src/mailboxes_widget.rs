@@ -6,7 +6,7 @@ use ratatui::{
 
 use crate::{
     color_scheme::COLOR_SCHEME,
-    model::{Message, ScrollDirection},
+    model::{Mailbox, Message, ScrollDirection},
 };
 
 pub(crate) struct MailboxesList {
@@ -39,19 +39,18 @@ impl MailboxesList {
             _ => {}
         };
 
-        let (account, mailbox) = self.current_mailbox();
-        Some(Message::MailboxChange { account, mailbox })
+        Some(Message::MailboxChange(self.current_mailbox()))
     }
 
-    pub(crate) fn current_mailbox(&self) -> (Box<str>, Box<str>) {
-        (
-            self.mailboxes[self.selected_mailbox].0.clone(),
-            self.mailboxes[self.selected_mailbox]
+    pub(crate) fn current_mailbox(&self) -> Mailbox {
+        Mailbox {
+            account: self.mailboxes[self.selected_mailbox].0.clone(),
+            mailbox: self.mailboxes[self.selected_mailbox]
                 .1
                 .as_ref()
                 .unwrap()
                 .clone(),
-        )
+        }
     }
 }
 

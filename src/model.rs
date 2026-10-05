@@ -1,7 +1,16 @@
 use crossterm::event::KeyEvent;
 use time::OffsetDateTime;
 
-use crate::{content_widget::Content, emails_widget::EmailsList, mailboxes_widget::MailboxesList};
+use crate::{
+    content_widget::Content, emails_widget::EmailsList, mail::Email,
+    mailboxes_widget::MailboxesList,
+};
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct Mailbox {
+    pub(crate) account: Box<str>,
+    pub(crate) mailbox: Box<str>,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) enum EmailSelector {
@@ -12,8 +21,7 @@ pub(crate) enum EmailSelector {
 
 #[derive(Default, Debug)]
 pub(crate) struct ReindexStatus {
-    pub(crate) account: Box<str>,
-    pub(crate) mailbox: Box<str>,
+    pub(crate) mailbox: Mailbox,
     pub(crate) current: usize,
     pub(crate) total: usize,
     pub(crate) done: bool,
@@ -63,11 +71,14 @@ pub(crate) enum Message {
         mailbox: Box<str>,
     },
     LoadMoreMails(EmailSelector),
-    MailboxChange {
-        account: Box<str>,
-        mailbox: Box<str>,
+    MailboxChange(Mailbox),
+    MailboxMetadata {
+        mailbox: Mailbox,
+        uid_validity: u32,
+        highest_mod_seq: u64,
     },
     ReindexStatus(ReindexStatus),
+    NewEmails(Vec<Email>),
     Scroll(ScrollDirection),
     FocusNext,
     FocusPrev,

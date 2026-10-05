@@ -5,6 +5,19 @@ use std::sync::mpsc;
 
 use anyhow::Context;
 use anyhow::Result;
+use anyhow::anyhow;
+use io_imap::client::ImapClient;
+use io_imap::client::ImapClientStd;
+use io_imap::client::ImapClientStdConnectOptions;
+use io_imap::rfc3501::fetch::ImapMessageFetchOptions;
+use io_imap::rfc3501::login::ImapLoginOptions;
+use io_imap::rfc3501::select::ImapMailboxSelectOptions;
+use io_imap::types::core::VecN;
+use io_imap::types::extensions::enable::CapabilityEnable;
+use io_imap::types::fetch::MessageDataItem;
+use io_imap::types::fetch::MessageDataItemName;
+use io_imap::types::mailbox::Mailbox;
+use io_imap::types::sequence::SequenceSet;
 use mail_parser::MimeHeaders;
 use native_tls::TlsConnector;
 use native_tls::TlsStream;
@@ -16,6 +29,7 @@ use time::Time;
 use time::UtcOffset;
 use time::format_description::well_known;
 
+use crate::model;
 use crate::model::Message;
 
 enum AddrType {
@@ -378,50 +392,117 @@ pub fn index_email(
 }
 
 pub fn reindex_mailbox(
-    account: &str,
-    mailbox: &str,
-    session: &mut imap::Session<TlsStream<TcpStream>>,
-    db: &mut Connection,
+    mailbox: &model::Mailbox,
+    url: url::Url,
+    user: &str,
+    password: &str,
+    starttls: bool,
     notifications: mpsc::Sender<Message>,
 ) -> Result<()> {
-    db.execute(
-        "DELETE FROM emails WHERE account=?1 AND mailbox=?2",
-        [account, mailbox],
-    )
-    .context("cleaning up db")?;
-    db.execute(
-        "DELETE FROM email_attachements WHERE account=?1 AND mailbox=?2",
-        [account, mailbox],
-    )
-    .context("cleaning up db")?;
+    let mut opts = ImapClientStdConnectOptions::default();
+    opts.session.starttls = starttls;
+    let (mut client, _) =
+        ImapClientStd::connect(&url, opts).context("connecting to IMAP server")?;
 
-    let mbox = session.select(mailbox).context("opening mailbox")?;
-    let uid_result = session.uid_fetch("1:*", "FLAGS").context("fetching uids")?;
-    let uids: Vec<u32> = uid_result.into_iter().map(|v| v.uid.unwrap()).collect();
-    db.execute(
-        "UPDATE mailboxes SET uid_validity = ?1 WHERE account = ?2 AND name = ?3",
-        (
-            mbox.uid_validity.context("no uid_validity")?,
-            account,
-            mailbox,
-        ),
-    )?;
+    client
+        .login(user, password, ImapLoginOptions::default())
+        .context("authenticating with IMAP server")?;
+
+    client
+        .enable(VecN::from([CapabilityEnable::try_from("QRESYNC").unwrap()]))
+        .context("requesting QRESYNC cap")?;
+    let mbox = mailbox.mailbox.clone().into_string();
+    let mbox = Mailbox::try_from(mbox).context("getting mailbox")?;
+    let mb_metadata = client
+        .select(mbox, ImapMailboxSelectOptions::default())
+        .context("selecting mailbox")?;
+    notifications.send(Message::MailboxMetadata {
+        mailbox: mailbox.clone(),
+        uid_validity: mb_metadata
+            .uid_validity
+            .context("getting UIDVALIDITY")?
+            .into(),
+        highest_mod_seq: mb_metadata
+            .highest_mod_seq
+            .context("getting HIGHEST_MOD_SEQ")?,
+    })?;
+
+    let fetches = client
+        .fetch(
+            "1:*".try_into().unwrap(),
+            (vec![MessageDataItemName::Flags]).into(),
+            ImapMessageFetchOptions {
+                uid: true,
+                ..Default::default()
+            },
+        )
+        .context("fetching list of mails in mailbox")?;
+
+    let mut uids: Vec<u32> = Vec::with_capacity(fetches.len());
+    for (_, items) in fetches {
+        uids.push(
+            items
+                .into_iter()
+                .filter_map(|v| match v {
+                    MessageDataItem::Uid(uid) => Some(uid.into()),
+                    _ => None,
+                })
+                .next()
+                .expect("no uid?"),
+        );
+    }
 
     let mut count = 0;
     let sz = uids.len();
-    for uid in uids {
-        count += 1;
-        // TODO: batch this: vvvv
-        fetch_email(account, mailbox, uid, session, db)?;
-        if uid % 10 == 0 {
-            let _ = notifications.send(Message::ReindexStatus(crate::model::ReindexStatus {
-                account: Box::from(account),
-                mailbox: Box::from(mailbox),
-                current: count,
-                total: sz,
-                done: false,
-            }));
+    for chunk in uids.chunks(10) {
+        count += chunk.len();
+        let range: String = chunk
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let fetches = client
+            .fetch(
+                range.as_str().try_into().unwrap(),
+                vec![
+                    MessageDataItemName::Flags,
+                    MessageDataItemName::InternalDate,
+                    MessageDataItemName::BodyExt {
+                        section: None,
+                        partial: None,
+                        peek: true,
+                    },
+                ]
+                .into(),
+                ImapMessageFetchOptions {
+                    uid: true,
+                    ..Default::default()
+                },
+            )
+            .context("fetching emails")?;
+
+        for (_, items) in fetches {
+            let mut items = items.into_iter();
+            let (
+                Some(MessageDataItem::Uid(uid)),
+                Some(MessageDataItem::Flags(flags)),
+                Some(MessageDataItem::InternalDate(idate)),
+                Some(MessageDataItem::BodyExt {
+                    section,
+                    origin,
+                    data,
+                }),
+            ) = (items.next(), items.next(), items.next(), items.next())
+            else {
+                return Err(anyhow!("unexpected fetch result"));
+            };
         }
+        let _ = notifications.send(Message::ReindexStatus(crate::model::ReindexStatus {
+            mailbox: mailbox.clone(),
+            current: count,
+            total: sz,
+            done: false,
+        }));
     }
 
     Ok(())
