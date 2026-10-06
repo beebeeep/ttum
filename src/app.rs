@@ -1,11 +1,4 @@
-use std::{
-    arch::x86_64::_mm_mask_reduce_mul_epi8,
-    collections::{HashMap, VecDeque},
-    net::TcpStream,
-    sync::{Arc, Mutex, RwLock, mpsc},
-    thread,
-    time::Duration,
-};
+use std::{collections::VecDeque, sync::mpsc, thread};
 
 use crate::{
     color_scheme::COLOR_SCHEME,
@@ -20,12 +13,11 @@ use crate::{
     util::centered_rect,
 };
 use anyhow::{Context, Result, anyhow};
-use native_tls::TlsStream;
 use ratatui::{
     Frame,
     crossterm::event::{self, Event, KeyCode},
     layout::{Constraint, Layout, Margin, Rect},
-    style::{self, Style},
+    style::Style,
     widgets::{Block, Clear, LineGauge, ListState, Paragraph, TableState, Widget},
 };
 use time::OffsetDateTime;
@@ -51,14 +43,17 @@ pub(crate) struct Envelope {
 
 impl App {
     pub fn load(mut db: rusqlite::Connection, update: bool) -> Result<Self> {
-        let mut sessions = mail::connect_to_accounts(&db).context("connecting to all accounts")?;
-        let mut mailboxes = Vec::with_capacity(sessions.len());
-        for (account, conn) in sessions.iter_mut() {
-            let mailbox_names =
-                get_mailboxes(account, update, conn, &mut db).context("listing mailboxes")?;
-            mailboxes.push((account.clone(), None));
-            for n in mailbox_names {
-                mailboxes.push((account.clone(), Some(n.into_boxed_str())));
+        let mut mailboxes = Vec::with_capacity(3);
+        {
+            let mut stmt = db.prepare(
+            "SELECT account, name FROM mailboxes WHERE hidden = 0 ORDER BY account, lower(name) ASC",
+        )?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                mailboxes.push(Mailbox {
+                    account: row.get(0)?,
+                    mailbox: row.get(1)?,
+                });
             }
         }
         let (events_tx, events_rx) = mpsc::channel();
@@ -67,12 +62,7 @@ impl App {
                 running_state: RunningState::MainView,
                 active_pane: ActivePane::Mailboxes,
                 status_bar_text: String::new(),
-                mbox_pane: MailboxesList {
-                    mailboxes,
-                    selected_mailbox: 0,
-                    list_state: ListState::default(),
-                    focused: true,
-                },
+                mbox_pane: MailboxesList::new(&mailboxes),
                 emails_pane: EmailsList {
                     emails: VecDeque::new(),
                     selected_email: 0,
@@ -122,13 +112,6 @@ impl App {
     fn view(&mut self, frame: &mut Frame) {
         let layout =
             Layout::vertical([Constraint::Fill(1), Constraint::Max(1)]).split(frame.area());
-        self.model.status_bar_text = format!(
-            "mailbox {}/{}, emails {}/{}",
-            self.model.mbox_pane.selected_mailbox,
-            self.model.mbox_pane.mailboxes.len(),
-            self.model.emails_pane.selected_email,
-            self.model.emails_pane.emails.len()
-        );
         self.status_bar(frame, layout[1]);
         match &self.model.running_state {
             RunningState::MainView => self.main_view(frame, layout[0]),
@@ -228,6 +211,12 @@ impl App {
                 KeyCode::Char('r') | KeyCode::F(5) => Some(Message::ReindexMailbox(
                     self.model.mbox_pane.current_mailbox(),
                 )),
+                KeyCode::Char('v') if matches!(self.model.active_pane, ActivePane::Mailboxes) => {
+                    Some(Message::ToggleMailboxVisibility {
+                        mailbox: self.model.mbox_pane.current_mailbox(),
+                        visible: false,
+                    })
+                }
                 KeyCode::Tab => Some(Message::FocusNext),
                 KeyCode::BackTab => Some(Message::FocusPrev),
                 _ => None,
@@ -271,6 +260,9 @@ impl App {
                 highest_mod_seq,
             } => self.update_mailbox_metadata(&mailbox, uid_validity, highest_mod_seq)?,
             Message::NewEmails { mailbox, emails } => self.save_emails(&mailbox, emails)?,
+            Message::ToggleMailboxVisibility { mailbox, visible } => {
+                self.set_mailbox_visibility(&mailbox, visible)?
+            }
         })
     }
 
@@ -285,6 +277,24 @@ impl App {
             Ok(Some(Message::Batch(results)))
         } else {
             Ok(results.pop())
+        }
+    }
+
+    fn set_mailbox_visibility(
+        &mut self,
+        mailbox: &Mailbox,
+        visible: bool,
+    ) -> Result<Option<Message>> {
+        let hidden = if visible { 0 } else { 1 };
+        self.model.status_bar_text = format!("hiding {mailbox}");
+        self.db.execute(
+            "UPDATE mailboxes SET hidden=?1 WHERE account = ?2 AND name = ?3",
+            (hidden, &mailbox.account, &mailbox.mailbox),
+        )?;
+        if !visible {
+            Ok(self.model.mbox_pane.hide_current_mailbox())
+        } else {
+            Ok(None)
         }
     }
 

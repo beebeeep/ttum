@@ -92,5 +92,9 @@ pub(crate) enum Message {
     FocusPrev,
     SelectedEmail(u32),
     Batch(Vec<Message>),
+    ToggleMailboxVisibility {
+        mailbox: Mailbox,
+        visible: bool,
+    },
     Quit,
 }

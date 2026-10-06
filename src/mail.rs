@@ -591,7 +591,9 @@ pub(crate) fn get_mailboxes(
 ) -> Result<Vec<String>> {
     let mut mailboxes = Vec::with_capacity(3);
     if !update {
-        let mut stmt = db.prepare("SELECT name FROM mailboxes WHERE account=?1")?;
+        let mut stmt = db.prepare(
+            "SELECT name FROM mailboxes WHERE account=?1 AND hidden = 0 ORDER BY lower(name) ASC",
+        )?;
         let mut rows = stmt.query([account])?;
         while let Some(row) = rows.next()? {
             mailboxes.push(row.get(0)?);

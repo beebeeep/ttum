@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use ratatui::{
     style::Style,
     text::Text,
@@ -9,6 +11,7 @@ use crate::{
     model::{Mailbox, Message, ScrollDirection},
 };
 
+#[derive(Default)]
 pub(crate) struct MailboxesList {
     pub(crate) mailboxes: Vec<(Box<str>, Option<Box<str>>)>,
     pub(crate) selected_mailbox: usize,
@@ -17,6 +20,37 @@ pub(crate) struct MailboxesList {
 }
 
 impl MailboxesList {
+    pub(crate) fn new(mailboxes: &[Mailbox]) -> Self {
+        let mut mm: HashMap<&str, Vec<&str>> = HashMap::new();
+        for m in mailboxes {
+            mm.entry(&m.account)
+                .and_modify(|e| e.push(m.mailbox.as_ref()))
+                .or_insert(vec![m.mailbox.as_ref()]);
+        }
+        let mut mailboxes = Vec::with_capacity(mm.len() * 3);
+        for (acc, mboxes) in mm {
+            mailboxes.push((Box::from(acc), None));
+            for mbox in mboxes {
+                mailboxes.push((Box::from(acc), Some(Box::from(mbox))));
+            }
+        }
+
+        Self {
+            mailboxes,
+            selected_mailbox: 0,
+            list_state: ListState::default(),
+            focused: true,
+        }
+    }
+
+    pub(crate) fn hide_current_mailbox(&mut self) -> Option<Message> {
+        self.mailboxes.remove(self.selected_mailbox);
+        if self.selected_mailbox >= self.mailboxes.len() {
+            self.selected_mailbox = self.mailboxes.len() - 1;
+        }
+        Some(Message::MailboxChange(self.current_mailbox()))
+    }
+
     pub(crate) fn scroll(&mut self, d: ScrollDirection) -> Option<Message> {
         match d {
             ScrollDirection::Down => {
@@ -36,7 +70,7 @@ impl MailboxesList {
                     }
                 }
             }
-            _ => {}
+            _ => return None,
         };
 
         Some(Message::MailboxChange(self.current_mailbox()))
