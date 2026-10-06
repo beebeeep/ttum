@@ -106,23 +106,15 @@ impl App {
         //     max_uid: 10000,
         //     done: false,
         // };
+        terminal.draw(|f| self.view(f))?;
         while self.model.running_state != RunningState::Done {
-            // Render the current view
-            terminal.draw(|f| self.view(f))?;
-
-            let mut current_msg = match self.events_rx.recv_timeout(Duration::from_millis(66)) {
-                Ok(msg) => Some(msg),
-                Err(e) => match e {
-                    mpsc::RecvTimeoutError::Timeout => None,
-                    mpsc::RecvTimeoutError::Disconnected => {
-                        return Err(anyhow!("channel dead"));
-                    }
-                },
-            };
+            let mut current_msg = Some(self.events_rx.recv().context("event channel died")?);
 
             while current_msg.is_some() {
                 current_msg = self.update(current_msg.unwrap())?;
             }
+            // Render the current view
+            terminal.draw(|f| self.view(f))?;
         }
         Ok(())
     }
@@ -190,10 +182,7 @@ impl App {
         let status = &self.model.reindex_status;
 
         let block = Block::bordered()
-            .title(format!(
-                " Reindexing {}/{} ",
-                status.account, status.mailbox
-            ))
+            .title(format!(" Reindexing {} ", status.mailbox))
             .title_alignment(ratatui::layout::Alignment::Left)
             .border_type(ratatui::widgets::BorderType::Rounded)
             .border_style(style);
@@ -236,10 +225,9 @@ impl App {
                 KeyCode::Right | KeyCode::Char('l') => {
                     Some(Message::Scroll(ScrollDirection::Right))
                 }
-                KeyCode::Char('r') | KeyCode::F(5) => {
-                    let (account, mailbox) = self.model.mbox_pane.current_mailbox();
-                    Some(Message::ReindexMailbox { account, mailbox })
-                }
+                KeyCode::Char('r') | KeyCode::F(5) => Some(Message::ReindexMailbox(
+                    self.model.mbox_pane.current_mailbox(),
+                )),
                 KeyCode::Tab => Some(Message::FocusNext),
                 KeyCode::BackTab => Some(Message::FocusPrev),
                 _ => None,
@@ -270,12 +258,9 @@ impl App {
                 self.model.reindex_status = status;
                 None
             }
-            Message::ReindexMailbox { account, mailbox } => {
-                self.start_mailbox_reindex(&account, &mailbox)?
-            }
+            Message::ReindexMailbox(mailbox) => self.start_mailbox_reindex(&mailbox)?,
             Message::LoadMoreMails(selector) => {
-                let (account, mailbox) = self.model.mbox_pane.current_mailbox();
-                self.load_more_emails(&account, &mailbox, &selector)?
+                self.load_more_emails(&self.model.mbox_pane.current_mailbox(), &selector)?
             }
             Message::MailboxChange(mailbox) => self.load_mailbox(&mailbox)?,
             Message::Batch(messages) => self.process_batch(messages)?,
@@ -285,7 +270,7 @@ impl App {
                 uid_validity,
                 highest_mod_seq,
             } => self.update_mailbox_metadata(&mailbox, uid_validity, highest_mod_seq)?,
-            Message::NewEmails(emails) => todo!(),
+            Message::NewEmails { mailbox, emails } => self.save_emails(&mailbox, emails)?,
         })
     }
 
@@ -310,7 +295,7 @@ impl App {
         highest_mod_seq: u64,
     ) -> Result<Option<Message>> {
         self.db.execute(
-            "UPDATE mailboxes SET uid_validity = ?1, SET highest_mod_seq = ?2 WHERE account = ?3 AND name = ?4",
+            "UPDATE mailboxes SET uid_validity = ?1, highest_mod_seq = ?2 WHERE account = ?3 AND name = ?4",
             (
                 uid_validity,
                 highest_mod_seq as i64,
@@ -322,9 +307,15 @@ impl App {
     }
 
     fn load_email(&mut self, uid: u32) -> Result<Option<Message>> {
-        let (account, mailbox) = self.model.mbox_pane.current_mailbox();
-        let db = self.db.lock().expect("poisoned mutex");
-        self.model.content_pane.email = Email::load_from_db(&account, &mailbox, uid, &db)?;
+        let mailbox = self.model.mbox_pane.current_mailbox();
+        self.model.content_pane.email = Email::load_from_db(&mailbox, uid, &self.db)?;
+        Ok(None)
+    }
+
+    fn save_emails(&mut self, mailbox: &Mailbox, emails: Vec<Email>) -> Result<Option<Message>> {
+        for email in emails {
+            email.save_to_db(mailbox, &mut self.db)?;
+        }
         Ok(None)
     }
 
@@ -363,7 +354,7 @@ impl App {
 
     fn load_mailbox(&mut self, mailbox: &Mailbox) -> Result<Option<Message>> {
         let emails = {
-            self.load_mbox_emails(mailbox.account, mailbox.mailbox, &EmailSelector::Latest, 50)
+            self.load_mbox_emails(mailbox, &EmailSelector::Latest, 50)
                 .context("loading mailbox")?
         };
         self.model.emails_pane.emails = VecDeque::from(emails);
@@ -374,12 +365,11 @@ impl App {
 
     fn load_more_emails(
         &mut self,
-        account: &str,
-        mailbox: &str,
+        mailbox: &Mailbox,
         selector: &EmailSelector,
     ) -> Result<Option<Message>> {
         let emails = {
-            self.load_mbox_emails(account, mailbox, selector, 10)
+            self.load_mbox_emails(mailbox, selector, 10)
                 .context("loading mailbox")?
         };
         match selector {
@@ -390,42 +380,40 @@ impl App {
         Ok(None)
     }
 
-    fn start_mailbox_reindex(&mut self, account: &str, mailbox: &str) -> Result<Option<Message>> {
+    fn start_mailbox_reindex(&mut self, mailbox: &Mailbox) -> Result<Option<Message>> {
         self.model.running_state = RunningState::Reindex;
         self.model.reindex_status = ReindexStatus {
-            account: Box::from(account),
-            mailbox: Box::from(mailbox),
+            mailbox: mailbox.clone(),
             ..Default::default()
         };
         let notifications = self.events_tx.clone();
         self.db
             .execute(
                 "DELETE FROM emails WHERE account=?1 AND mailbox=?2",
-                [account, mailbox],
+                [&mailbox.account, &mailbox.mailbox],
             )
             .context("cleaning up db")?;
         self.db
             .execute(
                 "DELETE FROM email_attachements WHERE account=?1 AND mailbox=?2",
-                [account, mailbox],
+                [&mailbox.account, &mailbox.mailbox],
             )
             .context("cleaning up db")?;
 
-        let account = Box::from(account);
-        let mailbox = Box::from(mailbox);
+        let mb = mailbox.clone();
+        let (url, login, password, starttls) = self.get_mailbox_creds(&mailbox.account)?;
         thread::spawn(move || {
-            let mut db = db.lock().expect("poiosoned mutext");
             match mail::reindex_mailbox(
-                &account,
-                &mailbox,
-                &mut session,
-                &mut db,
+                &mb,
+                url,
+                &login,
+                &password,
+                starttls,
                 notifications.clone(),
             ) {
                 Ok(_) => {
                     let _ = notifications.send(Message::ReindexStatus(ReindexStatus {
-                        account: account,
-                        mailbox: mailbox,
+                        mailbox: mb,
                         current: 0,
                         total: 0,
                         done: true,
@@ -485,5 +473,23 @@ impl App {
         }
 
         Ok(result)
+    }
+
+    fn get_mailbox_creds(&self, account: &str) -> Result<(url::Url, Box<str>, Box<str>, bool)> {
+        let (host, port, login, password, starttls): (Box<str>, u16, Box<str>, Box<str>, bool) =
+            self.db.query_one(
+                "SELECT host, port, login, password, starttls FROM accounts WHERE name=?1",
+                [account],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )?;
+        Ok((
+            url::Url::parse(&format!(
+                "{}://{host}:{port}",
+                if starttls { "imap" } else { "imaps" }
+            ))?,
+            login,
+            password,
+            starttls,
+        ))
     }
 }

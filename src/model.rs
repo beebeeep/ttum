@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use crossterm::event::KeyEvent;
 use time::OffsetDateTime;
 
@@ -10,6 +12,12 @@ use crate::{
 pub(crate) struct Mailbox {
     pub(crate) account: Box<str>,
     pub(crate) mailbox: Box<str>,
+}
+
+impl Display for Mailbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.account, self.mailbox)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -66,10 +74,7 @@ pub(crate) enum ScrollDirection {
 #[derive(Debug)]
 pub(crate) enum Message {
     KeyPress(KeyEvent),
-    ReindexMailbox {
-        account: Box<str>,
-        mailbox: Box<str>,
-    },
+    ReindexMailbox(Mailbox),
     LoadMoreMails(EmailSelector),
     MailboxChange(Mailbox),
     MailboxMetadata {
@@ -78,7 +83,10 @@ pub(crate) enum Message {
         highest_mod_seq: u64,
     },
     ReindexStatus(ReindexStatus),
-    NewEmails(Vec<Email>),
+    NewEmails {
+        mailbox: Mailbox,
+        emails: Vec<Email>,
+    },
     Scroll(ScrollDirection),
     FocusNext,
     FocusPrev,

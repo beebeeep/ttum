@@ -16,6 +16,7 @@ use io_imap::types::core::VecN;
 use io_imap::types::extensions::enable::CapabilityEnable;
 use io_imap::types::fetch::MessageDataItem;
 use io_imap::types::fetch::MessageDataItemName;
+use io_imap::types::flag::FlagFetch;
 use io_imap::types::mailbox::Mailbox;
 use io_imap::types::sequence::SequenceSet;
 use mail_parser::MimeHeaders;
@@ -166,8 +167,7 @@ impl Default for Email {
 
 impl Email {
     pub(crate) fn load_from_db(
-        account: &str,
-        mailbox: &str,
+        mailbox: &model::Mailbox,
         uid: u32,
         db: &Connection,
     ) -> Result<Self> {
@@ -177,7 +177,7 @@ impl Email {
                      message_id, timestamp, internal_timestamp, subject, in_reply_to, seen, body
                  FROM emails
                  WHERE account=?1 AND mailbox=?2 AND uid=?3",
-                (account, mailbox, uid),
+                (&mailbox.account, &mailbox.mailbox, uid),
                 |r| {
                     Ok(Email {
                         uid,
@@ -204,7 +204,7 @@ impl Email {
         Ok(email)
     }
 
-    fn save_to_db(&self, account: &str, mailbox: &str, db: &mut Connection) -> Result<()> {
+    pub(crate) fn save_to_db(&self, mailbox: &model::Mailbox, db: &mut Connection) -> Result<()> {
         let tx = db.transaction().context("starting transaction")?;
         tx.execute(
             "INSERT INTO emails (
@@ -216,8 +216,8 @@ impl Email {
 
             )",
             (
-                account,
-                mailbox,
+                &mailbox.account,
+                &mailbox.mailbox,
                 self.uid,
                 &self.message_id,
                 self.timestamp.map(|v| v.unix_timestamp()),
@@ -230,29 +230,29 @@ impl Email {
         )?;
         for addr in &self.from {
             tx.execute("INSERT INTO email_addresses (account, mailbox, uid, type, name, email) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    (account, mailbox, self.uid, AddrType::From, &addr.name, &addr.email )).context("inserting email address")?;
+                    (&mailbox.account, &mailbox.mailbox, self.uid, AddrType::From, &addr.name, &addr.email )).context("inserting email address")?;
         }
         for addr in &self.to {
             tx.execute("INSERT INTO email_addresses (account, mailbox, uid, type, name, email) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    (account, mailbox, self.uid, AddrType::To, &addr.name, &addr.email )).context("inserting email address")?;
+                    (&mailbox.account, &mailbox.mailbox, self.uid, AddrType::To, &addr.name, &addr.email )).context("inserting email address")?;
         }
         for addr in &self.sender {
             tx.execute("INSERT INTO email_addresses (account, mailbox, uid, type, name, email) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    (account, mailbox, self.uid, AddrType::Sender, &addr.name, &addr.email )).context("inserting email address")?;
+                    (&mailbox.account, &mailbox.mailbox, self.uid, AddrType::Sender, &addr.name, &addr.email )).context("inserting email address")?;
         }
         for addr in &self.cc {
             tx.execute("INSERT INTO email_addresses (account, mailbox, uid, type, name, email) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    (account, mailbox, self.uid, AddrType::Cc, &addr.name, &addr.email )).context("inserting email address")?;
+                    (&mailbox.account, &mailbox.mailbox, self.uid, AddrType::Cc, &addr.name, &addr.email )).context("inserting email address")?;
         }
         for addr in &self.bcc {
             tx.execute("INSERT INTO email_addresses (account, mailbox, uid, type, name, email) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    (account, mailbox, self.uid, AddrType::Bcc, &addr.name, &addr.email )).context("inserting email address")?;
+                    (&mailbox.account, &mailbox.mailbox, self.uid, AddrType::Bcc, &addr.name, &addr.email )).context("inserting email address")?;
         }
 
         for (name, data) in &self.attachements {
             tx.execute(
                 "INSERT INTO email_attachements(account, mailbox, uid, name, content) VALUES(?1, ?2, ?3, ?4, ?5)",
-                (account, mailbox, self.uid, name, data),
+                (&mailbox.account, &mailbox.mailbox, self.uid, name, data),
             )?;
         }
         tx.commit().context("committing transaction")?;
@@ -331,6 +331,7 @@ pub fn connect_to_accounts(
     Ok(connections)
 }
 
+/*
 pub fn index_email(
     account: &str,
     mailbox: &str,
@@ -390,6 +391,7 @@ pub fn index_email(
         .context("saving message to database")?;
     Ok(())
 }
+*/
 
 pub fn reindex_mailbox(
     mailbox: &model::Mailbox,
@@ -454,6 +456,7 @@ pub fn reindex_mailbox(
 
     let mut count = 0;
     let sz = uids.len();
+    // fetch email bodies, 10 emails per request
     for chunk in uids.chunks(10) {
         count += chunk.len();
         let range: String = chunk
@@ -481,28 +484,82 @@ pub fn reindex_mailbox(
             )
             .context("fetching emails")?;
 
+        let mut emails = Vec::with_capacity(10);
         for (_, items) in fetches {
+            // process each fetch and create email struct from body and metadata
             let mut items = items.into_iter();
             let (
                 Some(MessageDataItem::Uid(uid)),
                 Some(MessageDataItem::Flags(flags)),
                 Some(MessageDataItem::InternalDate(idate)),
                 Some(MessageDataItem::BodyExt {
-                    section,
-                    origin,
-                    data,
+                    section: _,
+                    origin: _,
+                    data: body,
                 }),
             ) = (items.next(), items.next(), items.next(), items.next())
             else {
                 return Err(anyhow!("unexpected fetch result"));
             };
+
+            let body = body.into_option().context("no email body")?;
+            let msg = mail_parser::MessageParser::default()
+                .parse(&body)
+                .context("parsing mail")?;
+            let timestamp = match msg.date() {
+                Some(d) => parse_datetime(d),
+                None => None,
+            };
+            let internal_timestamp =
+                OffsetDateTime::from_unix_timestamp(idate.as_ref().timestamp())
+                    .context("invalid internal timestamp")?;
+            let seen = flags
+                .iter()
+                .any(|v| matches!(v, FlagFetch::Flag(io_imap::types::flag::Flag::Seen)));
+            emails.push(Email {
+                uid: uid.into(),
+                message_id: msg.message_id().map(Box::from),
+                timestamp,
+                internal_timestamp,
+                from: msg.from().map(Address::multiple).unwrap_or_default(),
+                to: msg.to().map(Address::multiple).unwrap_or_default(),
+                sender: msg.sender().map(Address::multiple).unwrap_or_default(),
+                cc: msg.cc().map(Address::multiple).unwrap_or_default(),
+                bcc: msg.bcc().map(Address::multiple).unwrap_or_default(),
+                subject: msg.subject().map(Box::from),
+                in_reply_to: if let mail_parser::HeaderValue::Text(v) = msg.in_reply_to() {
+                    Some(Box::from(v.as_ref()))
+                } else {
+                    None
+                },
+                seen,
+                body: msg.body_text(0).map(|v| Box::from(v.as_ref())),
+                attachements: msg
+                    .attachments()
+                    .enumerate()
+                    .map(|(idx, a)| {
+                        (
+                            a.attachment_name()
+                                .map(Box::from)
+                                .unwrap_or_else(|| format!("attachement-{idx}").into_boxed_str()),
+                            a.contents().to_vec(),
+                        )
+                    })
+                    .collect(),
+            });
         }
-        let _ = notifications.send(Message::ReindexStatus(crate::model::ReindexStatus {
-            mailbox: mailbox.clone(),
-            current: count,
-            total: sz,
-            done: false,
-        }));
+        let _ = notifications.send(Message::Batch(vec![
+            Message::ReindexStatus(crate::model::ReindexStatus {
+                mailbox: mailbox.clone(),
+                current: count,
+                total: sz,
+                done: false,
+            }),
+            Message::NewEmails {
+                mailbox: mailbox.clone(),
+                emails,
+            },
+        ]));
     }
 
     Ok(())
@@ -524,79 +581,6 @@ fn parse_datetime(ts: &mail_parser::DateTime) -> Option<OffsetDateTime> {
         )
         .ok()?,
     ))
-}
-
-fn fetch_email(
-    account: &str,
-    mailbox: &str,
-    uid: u32,
-    session: &mut imap::Session<TlsStream<TcpStream>>,
-    db: &mut Connection,
-) -> Result<()> {
-    let fetch = session
-        .uid_fetch(format!("{uid}"), "(FLAGS INTERNALDATE BODY[])")
-        .context("fetching the message")?;
-    if fetch.is_empty() {
-        return Ok(());
-    }
-    let body = fetch[0].body().unwrap();
-    let msg = mail_parser::MessageParser::default()
-        .parse(body)
-        .context("parsing mail")?;
-    let internal_timestamp = match fetch[0].internal_date() {
-        Some(d) => OffsetDateTime::from_unix_timestamp(d.timestamp())?,
-        None => OffsetDateTime::now_utc(),
-    };
-    let timestamp = match msg.date() {
-        Some(d) => parse_datetime(d),
-        None => None,
-    };
-    let email = Email {
-        uid: fetch[0].uid.context("no uid")?,
-        message_id: msg.message_id().map(Box::from),
-        timestamp,
-        internal_timestamp,
-        from: msg.from().map(Address::multiple).unwrap_or_default(),
-        to: msg.to().map(Address::multiple).unwrap_or_default(),
-        sender: msg.sender().map(Address::multiple).unwrap_or_default(),
-        cc: msg.cc().map(Address::multiple).unwrap_or_default(),
-        bcc: msg.bcc().map(Address::multiple).unwrap_or_default(),
-        subject: msg.subject().map(Box::from),
-        in_reply_to: if let mail_parser::HeaderValue::Text(v) = msg.in_reply_to() {
-            Some(Box::from(v.as_ref()))
-        } else {
-            None
-        },
-        seen: fetch[0]
-            .flags()
-            .iter()
-            .any(|f| matches!(f, imap::types::Flag::Seen)),
-        body: msg.body_text(0).map(|v| Box::from(v.as_ref())),
-        attachements: msg
-            .attachments()
-            .enumerate()
-            .map(|(idx, a)| {
-                (
-                    a.attachment_name()
-                        .map(Box::from)
-                        .unwrap_or_else(|| format!("attachement-{idx}").into_boxed_str()),
-                    a.contents().to_vec(),
-                )
-            })
-            .collect(),
-    };
-
-    // let mut c = 0;
-    // let mut l = 0;
-    // for a in msg.attachments() {
-    //     c += 1;
-    //     l += a.len();
-    // }
-    // println!("{c} attachements, {l} bytes");
-    email
-        .save_to_db(account, mailbox, db)
-        .context("saving message to database")?;
-    Ok(())
 }
 
 pub(crate) fn get_mailboxes(
@@ -638,7 +622,7 @@ pub(crate) fn get_mailboxes(
 mod test {
     #[test]
     fn test_parser() {
-        let s = "=?utf-8?B?0J3QldCe0JPQoNCQ0J3QmNCn0JXQndCd0KvQmSDQmNCd0KLQldCg0J3QldCi?= =?utf-8?B?INCYINCR0JXQodCf0JvQkNCi0J3Qq9CZINCg0J7Qo9Ci0JXQoCE=?=";
+        let s = "=?UTF-8?B?TWFudGFzIE1pa8WheXM=?=";
         println!("{:?}", rfc2047_decoder::decode(s.as_bytes()));
     }
 }
