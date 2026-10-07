@@ -17,7 +17,7 @@ use io_imap::types::extensions::enable::CapabilityEnable;
 use io_imap::types::fetch::MessageDataItem;
 use io_imap::types::fetch::MessageDataItemName;
 use io_imap::types::flag::FlagFetch;
-use io_imap::types::mailbox::Mailbox;
+use io_imap::types::mailbox::Mailbox as ImapMailbox;
 use io_imap::types::sequence::SequenceSet;
 use mail_parser::MimeHeaders;
 use native_tls::TlsConnector;
@@ -30,7 +30,6 @@ use time::Time;
 use time::UtcOffset;
 use time::format_description::well_known;
 
-use crate::model;
 use crate::model::Message;
 
 enum AddrType {
@@ -108,7 +107,7 @@ impl From<&mail_parser::Addr<'_>> for Address {
 }
 
 impl Address {
-    fn multiple(addr: &mail_parser::Address) -> Vec<Self> {
+    pub(crate) fn multiple(addr: &mail_parser::Address) -> Vec<Self> {
         match addr {
             mail_parser::Address::List(addrs) => addrs.iter().map(Address::from).collect(),
             mail_parser::Address::Group(groups) => groups
@@ -123,6 +122,42 @@ impl Address {
                 .flatten()
                 .collect(),
         }
+    }
+}
+
+pub(crate) struct Envelope {
+    pub(crate) uid: u32,
+    pub(crate) subject: Box<str>,
+    pub(crate) timestamp: OffsetDateTime,
+    pub(crate) addresses: Vec<Address>, // from address for inboxes, to address for outboxes
+    pub(crate) seen: bool,
+    pub(crate) id: Option<Box<str>>,
+    pub(crate) in_reply_to: Option<Box<str>>,
+    pub(crate) thread_root: Option<Box<str>>,
+}
+
+#[derive(Debug, Default, Clone)]
+pub(crate) struct Mailbox {
+    pub(crate) account: Box<str>,
+    pub(crate) mailbox: Box<str>,
+}
+
+impl Display for Mailbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.account, self.mailbox)
+    }
+}
+
+pub(crate) struct Account {
+    url: url::Url,
+    user: Box<str>,
+    password: Box<str>,
+    starttls: bool,
+}
+
+impl Account {
+    pub(crate) fn load(name: &str, db: &Connection) -> Result<Self> {
+        todo!()
     }
 }
 
@@ -166,11 +201,7 @@ impl Default for Email {
 }
 
 impl Email {
-    pub(crate) fn load_from_db(
-        mailbox: &model::Mailbox,
-        uid: u32,
-        db: &Connection,
-    ) -> Result<Self> {
+    pub(crate) fn load_from_db(mailbox: &Mailbox, uid: u32, db: &Connection) -> Result<Self> {
         let email = db
             .query_one(
                 "SELECT
@@ -204,7 +235,7 @@ impl Email {
         Ok(email)
     }
 
-    pub(crate) fn save_to_db(&self, mailbox: &model::Mailbox, db: &mut Connection) -> Result<()> {
+    pub(crate) fn save_to_db(&self, mailbox: &Mailbox, db: &mut Connection) -> Result<()> {
         let tx = db.transaction().context("starting transaction")?;
         tx.execute(
             "INSERT INTO emails (
@@ -271,32 +302,6 @@ fn parse_str(s: &[u8]) -> Box<str> {
             Box::from(String::from_utf8_lossy(s))
         }
     }
-}
-
-fn parse_date(ts: &[u8]) -> Option<OffsetDateTime> {
-    let Ok(ts) = str::from_utf8(ts) else {
-        return None;
-    };
-    if let Ok(ts) = OffsetDateTime::parse(ts, &well_known::Rfc2822) {
-        return Some(ts);
-    }
-
-    let f = time::macros::format_description!(
-        version = 3,
-        "[weekday repr:short], [day] [month repr:short case_sensitive:false] [year repr:full] [hour repr:24 padding:zero]:[minute padding:zero]:[second padding:zero] [offset_hour sign:mandatory]"
-    );
-    if let Ok(ts) = OffsetDateTime::parse(ts, &f) {
-        return Some(ts);
-    }
-
-    let f = time::macros::format_description!(
-        version = 3,
-        "[day] [month repr:short case_sensitive:false] [year repr:full] [hour repr:24 padding:zero]:[minute padding:zero]:[second padding:zero] [offset_hour sign:mandatory]"
-    );
-    if let Ok(ts) = OffsetDateTime::parse(ts, &f) {
-        return Some(ts);
-    }
-    None
 }
 
 pub fn connect_to_accounts(
@@ -392,196 +397,6 @@ pub fn index_email(
     Ok(())
 }
 */
-
-pub fn reindex_mailbox(
-    mailbox: &model::Mailbox,
-    url: url::Url,
-    user: &str,
-    password: &str,
-    starttls: bool,
-    notifications: mpsc::Sender<Message>,
-) -> Result<()> {
-    let mut opts = ImapClientStdConnectOptions::default();
-    opts.session.starttls = starttls;
-    let (mut client, _) =
-        ImapClientStd::connect(&url, opts).context("connecting to IMAP server")?;
-
-    client
-        .login(user, password, ImapLoginOptions::default())
-        .context("authenticating with IMAP server")?;
-
-    client
-        .enable(VecN::from([CapabilityEnable::try_from("QRESYNC").unwrap()]))
-        .context("requesting QRESYNC cap")?;
-    let mbox = mailbox.mailbox.clone().into_string();
-    let mbox = Mailbox::try_from(mbox).context("getting mailbox")?;
-    let mb_metadata = client
-        .select(mbox, ImapMailboxSelectOptions::default())
-        .context("selecting mailbox")?;
-    notifications.send(Message::MailboxMetadata {
-        mailbox: mailbox.clone(),
-        uid_validity: mb_metadata
-            .uid_validity
-            .context("getting UIDVALIDITY")?
-            .into(),
-        highest_mod_seq: mb_metadata
-            .highest_mod_seq
-            .context("getting HIGHEST_MOD_SEQ")?,
-    })?;
-
-    let fetches = client
-        .fetch(
-            "1:*".try_into().unwrap(),
-            (vec![MessageDataItemName::Flags]).into(),
-            ImapMessageFetchOptions {
-                uid: true,
-                ..Default::default()
-            },
-        )
-        .context("fetching list of mails in mailbox")?;
-
-    let mut uids: Vec<u32> = Vec::with_capacity(fetches.len());
-    for (_, items) in fetches {
-        uids.push(
-            items
-                .into_iter()
-                .filter_map(|v| match v {
-                    MessageDataItem::Uid(uid) => Some(uid.into()),
-                    _ => None,
-                })
-                .next()
-                .expect("no uid?"),
-        );
-    }
-
-    let mut count = 0;
-    let sz = uids.len();
-    // fetch email bodies, 10 emails per request
-    for chunk in uids.chunks(10) {
-        count += chunk.len();
-        let range: String = chunk
-            .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        let fetches = client
-            .fetch(
-                range.as_str().try_into().unwrap(),
-                vec![
-                    MessageDataItemName::Flags,
-                    MessageDataItemName::InternalDate,
-                    MessageDataItemName::BodyExt {
-                        section: None,
-                        partial: None,
-                        peek: true,
-                    },
-                ]
-                .into(),
-                ImapMessageFetchOptions {
-                    uid: true,
-                    ..Default::default()
-                },
-            )
-            .context("fetching emails")?;
-
-        let mut emails = Vec::with_capacity(10);
-        for (_, items) in fetches {
-            // process each fetch and create email struct from body and metadata
-            let mut items = items.into_iter();
-            let (
-                Some(MessageDataItem::Uid(uid)),
-                Some(MessageDataItem::Flags(flags)),
-                Some(MessageDataItem::InternalDate(idate)),
-                Some(MessageDataItem::BodyExt {
-                    section: _,
-                    origin: _,
-                    data: body,
-                }),
-            ) = (items.next(), items.next(), items.next(), items.next())
-            else {
-                return Err(anyhow!("unexpected fetch result"));
-            };
-
-            let body = body.into_option().context("no email body")?;
-            let msg = mail_parser::MessageParser::default()
-                .parse(&body)
-                .context("parsing mail")?;
-            let timestamp = match msg.date() {
-                Some(d) => parse_datetime(d),
-                None => None,
-            };
-            let internal_timestamp =
-                OffsetDateTime::from_unix_timestamp(idate.as_ref().timestamp())
-                    .context("invalid internal timestamp")?;
-            let seen = flags
-                .iter()
-                .any(|v| matches!(v, FlagFetch::Flag(io_imap::types::flag::Flag::Seen)));
-            emails.push(Email {
-                uid: uid.into(),
-                message_id: msg.message_id().map(Box::from),
-                timestamp,
-                internal_timestamp,
-                from: msg.from().map(Address::multiple).unwrap_or_default(),
-                to: msg.to().map(Address::multiple).unwrap_or_default(),
-                sender: msg.sender().map(Address::multiple).unwrap_or_default(),
-                cc: msg.cc().map(Address::multiple).unwrap_or_default(),
-                bcc: msg.bcc().map(Address::multiple).unwrap_or_default(),
-                subject: msg.subject().map(Box::from),
-                in_reply_to: if let mail_parser::HeaderValue::Text(v) = msg.in_reply_to() {
-                    Some(Box::from(v.as_ref()))
-                } else {
-                    None
-                },
-                seen,
-                body: msg.body_text(0).map(|v| Box::from(v.as_ref())),
-                attachements: msg
-                    .attachments()
-                    .enumerate()
-                    .map(|(idx, a)| {
-                        (
-                            a.attachment_name()
-                                .map(Box::from)
-                                .unwrap_or_else(|| format!("attachement-{idx}").into_boxed_str()),
-                            a.contents().to_vec(),
-                        )
-                    })
-                    .collect(),
-            });
-        }
-        let _ = notifications.send(Message::Batch(vec![
-            Message::ReindexStatus(crate::model::ReindexStatus {
-                mailbox: mailbox.clone(),
-                current: count,
-                total: sz,
-                done: false,
-            }),
-            Message::NewEmails {
-                mailbox: mailbox.clone(),
-                emails,
-            },
-        ]));
-    }
-
-    Ok(())
-}
-
-fn parse_datetime(ts: &mail_parser::DateTime) -> Option<OffsetDateTime> {
-    Some(OffsetDateTime::new_in_offset(
-        Date::from_calendar_date(
-            ts.year as i32,
-            time::Month::try_from(ts.month).ok()?,
-            ts.day,
-        )
-        .ok()?,
-        Time::from_hms(ts.hour, ts.minute, ts.second).ok()?,
-        UtcOffset::from_hms(
-            ts.tz_hour as i8 * if ts.tz_before_gmt { -1 } else { 1 },
-            ts.tz_minute as i8,
-            0,
-        )
-        .ok()?,
-    ))
-}
 
 pub(crate) fn get_mailboxes(
     account: &str,

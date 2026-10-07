@@ -10,8 +10,8 @@ use ratatui::{
 use time::{OffsetDateTime, format_description::well_known};
 
 use crate::{
-    app::Envelope,
     color_scheme::COLOR_SCHEME,
+    mail::Envelope,
     model::{EmailSelector, Message, ScrollDirection},
 };
 

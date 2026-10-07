@@ -8,7 +8,8 @@ use ratatui::{
 
 use crate::{
     color_scheme::COLOR_SCHEME,
-    model::{Mailbox, Message, ScrollDirection},
+    mail::Mailbox,
+    model::{Message, ScrollDirection},
 };
 
 #[derive(Default)]

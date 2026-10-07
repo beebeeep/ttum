@@ -4,10 +4,11 @@ use crate::{
     color_scheme::COLOR_SCHEME,
     content_widget::Content,
     emails_widget::EmailsList,
-    mail::{self, Address, Email, get_mailboxes},
+    imap,
+    mail::{self, Address, Email, Envelope, Mailbox, get_mailboxes},
     mailboxes_widget::MailboxesList,
     model::{
-        self, ActivePane, EmailSelector, Mailbox, Message, Model, ReindexStatus, RunningState,
+        self, ActivePane, EmailSelector, Message, Model, ReindexStatus, RunningState,
         ScrollDirection,
     },
     util::centered_rect,
@@ -28,17 +29,6 @@ pub struct App {
     db: rusqlite::Connection,
     events_rx: mpsc::Receiver<Message>,
     events_tx: mpsc::Sender<Message>,
-}
-
-pub(crate) struct Envelope {
-    pub(crate) uid: u32,
-    pub(crate) subject: Box<str>,
-    pub(crate) timestamp: OffsetDateTime,
-    pub(crate) addresses: Vec<Address>, // from address for inboxes, to address for outboxes
-    pub(crate) seen: bool,
-    pub(crate) id: Option<Box<str>>,
-    pub(crate) in_reply_to: Option<Box<str>>,
-    pub(crate) thread_root: Option<Box<str>>,
 }
 
 impl App {
@@ -413,7 +403,7 @@ impl App {
         let mb = mailbox.clone();
         let (url, login, password, starttls) = self.get_mailbox_creds(&mailbox.account)?;
         thread::spawn(move || {
-            match mail::reindex_mailbox(
+            match imap::reindex_mailbox(
                 &mb,
                 url,
                 &login,

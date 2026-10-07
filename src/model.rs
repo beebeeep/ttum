@@ -1,24 +1,16 @@
 use std::fmt::Display;
 
+use anyhow::Result;
 use crossterm::event::KeyEvent;
+use rusqlite::Connection;
 use time::OffsetDateTime;
 
 use crate::{
-    content_widget::Content, emails_widget::EmailsList, mail::Email,
+    content_widget::Content,
+    emails_widget::EmailsList,
+    mail::{Email, Mailbox},
     mailboxes_widget::MailboxesList,
 };
-
-#[derive(Debug, Default, Clone)]
-pub(crate) struct Mailbox {
-    pub(crate) account: Box<str>,
-    pub(crate) mailbox: Box<str>,
-}
-
-impl Display for Mailbox {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}/{}", self.account, self.mailbox)
-    }
-}
 
 #[derive(Debug, Clone)]
 pub(crate) enum EmailSelector {
