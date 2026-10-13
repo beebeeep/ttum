@@ -5,7 +5,7 @@ use crate::{
     content_widget::Content,
     emails_widget::EmailsList,
     imap,
-    mail::{self, Address, Email, Envelope, Mailbox, get_mailboxes},
+    mail::{self, Account, Address, Email, Envelope, Mailbox, get_mailboxes},
     mailboxes_widget::MailboxesList,
     model::{
         self, ActivePane, EmailSelector, Message, Model, ReindexStatus, RunningState,
@@ -401,16 +401,9 @@ impl App {
             .context("cleaning up db")?;
 
         let mb = mailbox.clone();
-        let (url, login, password, starttls) = self.get_mailbox_creds(&mailbox.account)?;
-        thread::spawn(move || {
-            match imap::reindex_mailbox(
-                &mb,
-                url,
-                &login,
-                &password,
-                starttls,
-                notifications.clone(),
-            ) {
+        let account = Account::load(&mb.account, &self.db)?;
+        thread::spawn(
+            move || match imap::reindex_mailbox(&account, &mb, notifications.clone()) {
                 Ok(_) => {
                     let _ = notifications.send(Message::ReindexStatus(ReindexStatus {
                         mailbox: mb,
@@ -422,8 +415,8 @@ impl App {
                 Err(e) => {
                     println!("{e:#}");
                 }
-            }
-        });
+            },
+        );
         Ok(None)
     }
 

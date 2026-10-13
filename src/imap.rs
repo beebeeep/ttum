@@ -1,5 +1,5 @@
 use crate::{
-    mail::{Address, Email, Mailbox},
+    mail::{Account, Address, Email, Mailbox},
     model::Message,
 };
 use anyhow::{Context, Result, anyhow};
@@ -39,20 +39,21 @@ fn parse_datetime(ts: &mail_parser::DateTime) -> Option<OffsetDateTime> {
 }
 
 pub fn reindex_mailbox(
+    account: &Account,
     mailbox: &Mailbox,
-    url: url::Url,
-    user: &str,
-    password: &str,
-    starttls: bool,
     notifications: mpsc::Sender<Message>,
 ) -> Result<()> {
     let mut opts = ImapClientStdConnectOptions::default();
-    opts.session.starttls = starttls;
+    opts.session.starttls = account.starttls;
     let (mut client, _) =
-        ImapClientStd::connect(&url, opts).context("connecting to IMAP server")?;
+        ImapClientStd::connect(&account.url, opts).context("connecting to IMAP server")?;
 
     client
-        .login(user, password, ImapLoginOptions::default())
+        .login(
+            &account.user,
+            &account.password,
+            ImapLoginOptions::default(),
+        )
         .context("authenticating with IMAP server")?;
 
     client
@@ -208,4 +209,8 @@ pub fn reindex_mailbox(
     }
 
     Ok(())
+}
+
+pub(crate) fn get_account_mailboxes(account: &Account) -> Result<Vec<Mailbox>> {
+    todo!()
 }

@@ -1,36 +1,15 @@
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::net::TcpStream;
-use std::sync::mpsc;
 
+use crate::model::Message;
 use anyhow::Context;
 use anyhow::Result;
-use anyhow::anyhow;
-use io_imap::client::ImapClient;
-use io_imap::client::ImapClientStd;
-use io_imap::client::ImapClientStdConnectOptions;
-use io_imap::rfc3501::fetch::ImapMessageFetchOptions;
-use io_imap::rfc3501::login::ImapLoginOptions;
-use io_imap::rfc3501::select::ImapMailboxSelectOptions;
-use io_imap::types::core::VecN;
-use io_imap::types::extensions::enable::CapabilityEnable;
-use io_imap::types::fetch::MessageDataItem;
-use io_imap::types::fetch::MessageDataItemName;
-use io_imap::types::flag::FlagFetch;
-use io_imap::types::mailbox::Mailbox as ImapMailbox;
-use io_imap::types::sequence::SequenceSet;
-use mail_parser::MimeHeaders;
 use native_tls::TlsConnector;
 use native_tls::TlsStream;
 use rusqlite::Connection;
 use rusqlite::types::ToSqlOutput;
-use time::Date;
 use time::OffsetDateTime;
-use time::Time;
-use time::UtcOffset;
-use time::format_description::well_known;
-
-use crate::model::Message;
 
 enum AddrType {
     From,
@@ -142,6 +121,13 @@ pub(crate) struct Mailbox {
     pub(crate) mailbox: Box<str>,
 }
 
+#[derive(Debug)]
+pub(crate) struct MailboxWithMetadata {
+    pub(crate) inner: Mailbox,
+    pub(crate) uid_validity: u32,
+    pub(crate) highest_mod_seq: u64,
+}
+
 impl Display for Mailbox {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}/{}", self.account, self.mailbox)
@@ -149,15 +135,61 @@ impl Display for Mailbox {
 }
 
 pub(crate) struct Account {
-    url: url::Url,
-    user: Box<str>,
-    password: Box<str>,
-    starttls: bool,
+    pub(crate) url: url::Url,
+    pub(crate) user: Box<str>,
+    pub(crate) password: Box<str>,
+    pub(crate) starttls: bool,
 }
 
 impl Account {
     pub(crate) fn load(name: &str, db: &Connection) -> Result<Self> {
-        todo!()
+        let (host, port, user, password, starttls): (Box<str>, u16, Box<str>, Box<str>, bool) = db
+            .query_one(
+                "SELECT host, port, login, password, starttls FROM accounts WHERE name=?1",
+                [name],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )?;
+
+        Ok(Self {
+            url: url::Url::parse(&format!(
+                "{}://{host}:{port}",
+                if starttls { "imap" } else { "imaps" }
+            ))?,
+            user,
+            password,
+            starttls,
+        })
+    }
+
+    pub(crate) fn load_all(db: &Connection) -> Result<HashMap<Box<str>, Self>> {
+        let mut stmt =
+            db.prepare("SELECT name, host, port, login, password, starttls FROM accounts")?;
+        let mut rows = stmt.query([])?;
+        let mut result = HashMap::new();
+        while let Some(r) = rows.next()? {
+            let (name, host, port, user, password, starttls) = (
+                r.get(0)?,
+                r.get::<_, Box<str>>(1)?,
+                r.get::<_, u16>(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(4)?,
+            );
+            result.insert(
+                name,
+                Self {
+                    url: url::Url::parse(&format!(
+                        "{}://{host}:{port}",
+                        if starttls { "imap" } else { "imaps" }
+                    ))?,
+                    user,
+                    password,
+                    starttls,
+                },
+            );
+        }
+
+        Ok(result)
     }
 }
 
@@ -335,68 +367,6 @@ pub fn connect_to_accounts(
     }
     Ok(connections)
 }
-
-/*
-pub fn index_email(
-    account: &str,
-    mailbox: &str,
-    f: &imap::types::Fetch,
-    db: &mut Connection,
-) -> Result<()> {
-    let envelope = f.envelope().context("no envelope")?;
-    let internal_timestamp = match f.internal_date() {
-        Some(d) => OffsetDateTime::from_unix_timestamp(d.timestamp())?,
-        None => OffsetDateTime::now_utc(),
-    };
-    let timestamp = match envelope.date {
-        Some(ts) => parse_date(ts),
-        None => None,
-    };
-    let m = Email {
-        uid: f.uid.context("no uid")?,
-        message_id: envelope.message_id.map(parse_str),
-        timestamp,
-        internal_timestamp,
-        from: envelope
-            .from
-            .as_ref()
-            .map(|v| v.iter().map(|v| Address::from(v)).collect())
-            .unwrap_or(Vec::new()),
-        to: envelope
-            .to
-            .as_ref()
-            .map(|v| v.iter().map(|v| Address::from(v)).collect())
-            .unwrap_or(Vec::new()),
-        sender: envelope
-            .sender
-            .as_ref()
-            .map(|v| v.iter().map(|v| Address::from(v)).collect())
-            .unwrap_or(Vec::new()),
-        bcc: envelope
-            .bcc
-            .as_ref()
-            .map(|v| v.iter().map(|v| Address::from(v)).collect())
-            .unwrap_or(Vec::new()),
-        cc: envelope
-            .cc
-            .as_ref()
-            .map(|v| v.iter().map(|v| Address::from(v)).collect())
-            .unwrap_or(Vec::new()),
-        subject: envelope.subject.map(parse_str),
-        in_reply_to: envelope.in_reply_to.map(parse_str),
-        seen: f
-            .flags()
-            .iter()
-            .any(|f| matches!(f, imap::types::Flag::Seen)),
-        body: None,
-        attachements: Vec::new(),
-    };
-
-    m.save_to_db(account, mailbox, db)
-        .context("saving message to database")?;
-    Ok(())
-}
-*/
 
 pub(crate) fn get_mailboxes(
     account: &str,
