@@ -2,9 +2,14 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::net::TcpStream;
 
+use crate::imap::get_account_mailboxes;
 use crate::model::Message;
 use anyhow::Context;
 use anyhow::Result;
+use io_imap::client::ImapClient;
+use io_imap::client::ImapClientStd;
+use io_imap::client::ImapClientStdConnectOptions;
+use io_imap::rfc3501::login::ImapLoginOptions;
 use native_tls::TlsConnector;
 use native_tls::TlsStream;
 use rusqlite::Connection;
@@ -135,6 +140,7 @@ impl Display for Mailbox {
 }
 
 pub(crate) struct Account {
+    pub(crate) name: Box<str>,
     pub(crate) url: url::Url,
     pub(crate) user: Box<str>,
     pub(crate) password: Box<str>,
@@ -151,6 +157,7 @@ impl Account {
             )?;
 
         Ok(Self {
+            name: Box::from(name),
             url: url::Url::parse(&format!(
                 "{}://{host}:{port}",
                 if starttls { "imap" } else { "imaps" }
@@ -161,6 +168,18 @@ impl Account {
         })
     }
 
+    pub(crate) fn get_client(&self) -> Result<ImapClientStd> {
+        let mut opts = ImapClientStdConnectOptions::default();
+        opts.session.starttls = self.starttls;
+        let (mut client, _) =
+            ImapClientStd::connect(&self.url, opts).context("connecting to IMAP server")?;
+
+        client
+            .login(&self.user, &self.password, ImapLoginOptions::default())
+            .context("authenticating with IMAP server")?;
+        Ok(client)
+    }
+
     pub(crate) fn load_all(db: &Connection) -> Result<HashMap<Box<str>, Self>> {
         let mut stmt =
             db.prepare("SELECT name, host, port, login, password, starttls FROM accounts")?;
@@ -168,16 +187,17 @@ impl Account {
         let mut result = HashMap::new();
         while let Some(r) = rows.next()? {
             let (name, host, port, user, password, starttls) = (
-                r.get(0)?,
+                r.get::<_, Box<str>>(0)?,
                 r.get::<_, Box<str>>(1)?,
                 r.get::<_, u16>(2)?,
                 r.get(3)?,
                 r.get(4)?,
-                r.get(4)?,
+                r.get(5)?,
             );
             result.insert(
-                name,
+                name.clone(),
                 Self {
+                    name: name,
                     url: url::Url::parse(&format!(
                         "{}://{host}:{port}",
                         if starttls { "imap" } else { "imaps" }
@@ -368,38 +388,45 @@ pub fn connect_to_accounts(
     Ok(connections)
 }
 
-pub(crate) fn get_mailboxes(
-    account: &str,
-    update: bool,
-    session: &mut imap::Session<TlsStream<TcpStream>>,
-    db: &mut Connection,
-) -> Result<Vec<String>> {
+pub(crate) fn get_mailboxes(update: bool, db: &mut Connection) -> Result<Vec<Mailbox>> {
     let mut mailboxes = Vec::with_capacity(3);
     if !update {
         let mut stmt = db.prepare(
-            "SELECT name FROM mailboxes WHERE account=?1 AND hidden = 0 ORDER BY lower(name) ASC",
+            "SELECT account, name FROM mailboxes WHERE hidden = 0 ORDER BY account, lower(name) ASC",
         )?;
-        let mut rows = stmt.query([account])?;
+        let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
-            mailboxes.push(row.get(0)?);
+            mailboxes.push(Mailbox {
+                account: row.get(0)?,
+                mailbox: row.get(1)?,
+            });
         }
         return Ok(mailboxes);
     }
-    let list = session.list(None, Some("*")).context("listing mailboxes")?;
+
+    let accounts = Account::load_all(db).context("loading accounts")?;
     let tx = db.transaction().context("starting transaction")?;
     {
         let mut stmt = tx.prepare(
             "
-        INSERT into mailboxes (name, account, uid_validity)
-        VALUES (?1, ?2, ?3)
-        ON CONFLICT (account, name) DO UPDATE SET uid_validity=excluded.uid_validity",
+        INSERT into mailboxes (name, account, uid_validity, highest_mod_seq )
+        VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT (account, name) DO UPDATE SET
+            uid_validity=excluded.uid_validity,
+            highest_mod_seq=excluded.highest_mod_seq
+        ",
         )?;
-        for v in &list {
-            let mailbox = utf7_imap::decode_utf7_imap(String::from(v.name()));
-            let mbox = session.select(v.name()).context("opening mailbox")?;
-            stmt.execute((&mailbox, account, mbox.uid_validity))?;
-            println!("{account} {mailbox}");
-            mailboxes.push(mailbox);
+        for (acc_name, account) in &accounts {
+            let mboxes = get_account_mailboxes(account).context("getting account mailboxes")?;
+            for m in mboxes {
+                stmt.execute((
+                    acc_name,
+                    m.inner.mailbox.clone(),
+                    m.uid_validity,
+                    m.highest_mod_seq as i64,
+                ))?;
+                mailboxes.push(m.inner);
+            }
         }
     }
     tx.commit().context("committing transaction")?;

@@ -4,7 +4,7 @@ use crate::{
     color_scheme::COLOR_SCHEME,
     content_widget::Content,
     emails_widget::EmailsList,
-    imap,
+    imap::{self, get_account_mailboxes},
     mail::{self, Account, Address, Email, Envelope, Mailbox, get_mailboxes},
     mailboxes_widget::MailboxesList,
     model::{
@@ -33,19 +33,8 @@ pub struct App {
 
 impl App {
     pub fn load(mut db: rusqlite::Connection, update: bool) -> Result<Self> {
-        let mut mailboxes = Vec::with_capacity(3);
-        {
-            let mut stmt = db.prepare(
-            "SELECT account, name FROM mailboxes WHERE hidden = 0 ORDER BY account, lower(name) ASC",
-        )?;
-            let mut rows = stmt.query([])?;
-            while let Some(row) = rows.next()? {
-                mailboxes.push(Mailbox {
-                    account: row.get(0)?,
-                    mailbox: row.get(1)?,
-                });
-            }
-        }
+        let mailboxes = get_mailboxes(update, &mut db)?;
+
         let (events_tx, events_rx) = mpsc::channel();
         let r = Self {
             model: Model {
@@ -78,14 +67,6 @@ impl App {
         let key_events = self.events_tx.clone();
         thread::spawn(move || Self::event_poller(key_events));
 
-        // self.model.running_state = RunningState::Reindex;
-        // self.model.reindex_status = ReindexStatus {
-        //     account: Box::from("test"),
-        //     mailbox: Box::from("mbox"),
-        //     current_uid: 1000,
-        //     max_uid: 10000,
-        //     done: false,
-        // };
         terminal.draw(|f| self.view(f))?;
         while self.model.running_state != RunningState::Done {
             let mut current_msg = Some(self.events_rx.recv().context("event channel died")?);

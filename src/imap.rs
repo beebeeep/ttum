@@ -1,5 +1,5 @@
 use crate::{
-    mail::{Account, Address, Email, Mailbox},
+    mail::{Account, Address, Email, Mailbox, MailboxWithMetadata},
     model::Message,
 };
 use anyhow::{Context, Result, anyhow};
@@ -43,22 +43,11 @@ pub fn reindex_mailbox(
     mailbox: &Mailbox,
     notifications: mpsc::Sender<Message>,
 ) -> Result<()> {
-    let mut opts = ImapClientStdConnectOptions::default();
-    opts.session.starttls = account.starttls;
-    let (mut client, _) =
-        ImapClientStd::connect(&account.url, opts).context("connecting to IMAP server")?;
-
-    client
-        .login(
-            &account.user,
-            &account.password,
-            ImapLoginOptions::default(),
-        )
-        .context("authenticating with IMAP server")?;
-
+    let mut client = account.get_client()?;
     client
         .enable(VecN::from([CapabilityEnable::try_from("QRESYNC").unwrap()]))
         .context("requesting QRESYNC cap")?;
+
     let mbox = mailbox.mailbox.clone().into_string();
     let mbox = ImapMailbox::try_from(mbox).context("getting mailbox")?;
     let mb_metadata = client
@@ -211,6 +200,35 @@ pub fn reindex_mailbox(
     Ok(())
 }
 
-pub(crate) fn get_account_mailboxes(account: &Account) -> Result<Vec<Mailbox>> {
-    todo!()
+pub(crate) fn get_account_mailboxes(account: &Account) -> Result<Vec<MailboxWithMetadata>> {
+    let mut client = account.get_client()?;
+    client
+        .enable(VecN::from([CapabilityEnable::try_from("QRESYNC").unwrap()]))
+        .context("requesting QRESYNC cap")?;
+
+    let mailboxes = client.list("".try_into()?, "*".try_into()?)?;
+    let mut result = Vec::new();
+    for (mailbox, _, _) in mailboxes {
+        let mbox_name: Box<str> = match &mailbox {
+            ImapMailbox::Inbox => Box::from("Inbox"),
+            ImapMailbox::Other(d) => Box::from(String::from_utf8_lossy(d.inner().as_ref())),
+        };
+        let mb_metadata = client
+            .select(mailbox, ImapMailboxSelectOptions::default())
+            .context("selecting mailbox")?;
+        result.push(MailboxWithMetadata {
+            inner: Mailbox {
+                account: account.name.clone(),
+                mailbox: mbox_name,
+            },
+            uid_validity: mb_metadata
+                .uid_validity
+                .context("expect uid_validity")?
+                .into(),
+            highest_mod_seq: mb_metadata
+                .highest_mod_seq
+                .context("expect highest_mod_seq")?,
+        });
+    }
+    Ok(result)
 }
