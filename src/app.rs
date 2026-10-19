@@ -5,7 +5,7 @@ use crate::{
     content_widget::Content,
     emails_widget::EmailsList,
     imap::{self, get_account_mailboxes},
-    mail::{self, Account, Address, Email, Envelope, Mailbox, get_mailboxes},
+    mail::{self, Account, Address, Email, Envelope, Mailbox},
     mailboxes_widget::MailboxesList,
     model::{
         self, ActivePane, EmailSelector, Message, Model, ReindexStatus, RunningState,
@@ -33,7 +33,7 @@ pub struct App {
 
 impl App {
     pub fn load(mut db: rusqlite::Connection, update: bool) -> Result<Self> {
-        let mailboxes = get_mailboxes(update, &mut db)?;
+        let mailboxes = mail::get_mailboxes(update, &mut db)?;
 
         let (events_tx, events_rx) = mpsc::channel();
         let r = Self {
@@ -225,11 +225,10 @@ impl App {
             Message::MailboxChange(mailbox) => self.load_mailbox(&mailbox)?,
             Message::Batch(messages) => self.process_batch(messages)?,
             Message::SelectedEmail(uid) => self.load_email(uid)?,
-            Message::MailboxMetadata {
-                mailbox,
-                uid_validity,
-                highest_mod_seq,
-            } => self.update_mailbox_metadata(&mailbox, uid_validity, highest_mod_seq)?,
+            Message::MailboxMetadata(mailbox) => {
+                mailbox.save_to_db(&self.db)?;
+                None
+            }
             Message::NewEmails { mailbox, emails } => self.save_emails(&mailbox, emails)?,
             Message::ToggleMailboxVisibility { mailbox, visible } => {
                 self.set_mailbox_visibility(&mailbox, visible)?
@@ -267,24 +266,6 @@ impl App {
         } else {
             Ok(None)
         }
-    }
-
-    fn update_mailbox_metadata(
-        &self,
-        mailbox: &Mailbox,
-        uid_validity: u32,
-        highest_mod_seq: u64,
-    ) -> Result<Option<Message>> {
-        self.db.execute(
-            "UPDATE mailboxes SET uid_validity = ?1, highest_mod_seq = ?2 WHERE account = ?3 AND name = ?4",
-            (
-                uid_validity,
-                highest_mod_seq as i64,
-                &mailbox.account,
-                &mailbox.mailbox,
-            ),
-        )?;
-        Ok(None)
     }
 
     fn load_email(&mut self, uid: u32) -> Result<Option<Message>> {

@@ -126,6 +126,12 @@ pub(crate) struct Mailbox {
     pub(crate) mailbox: Box<str>,
 }
 
+impl Display for Mailbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.account, self.mailbox)
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct MailboxWithMetadata {
     pub(crate) inner: Mailbox,
@@ -133,9 +139,25 @@ pub(crate) struct MailboxWithMetadata {
     pub(crate) highest_mod_seq: u64,
 }
 
-impl Display for Mailbox {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}/{}", self.account, self.mailbox)
+impl MailboxWithMetadata {
+    pub(crate) fn save_to_db(&self, db: &Connection) -> Result<()> {
+        db.execute(
+            "
+            INSERT INTO mailboxes(accout, name uid_validity, highest_mod_seq)
+            VALUES (?1, ?2, ?3, ?4)
+            ON CONFLICT (account, name) DO UPDATE SET
+                uid_validity=excluded.uid_validity,
+                highest_mod_seq=excluded.highest_mod_seq
+            ",
+            (
+                &self.inner.account,
+                &self.inner.mailbox,
+                self.uid_validity,
+                self.highest_mod_seq as i64,
+            ),
+        )
+        .context("upserting mailbox metadata")?;
+        Ok(())
     }
 }
 

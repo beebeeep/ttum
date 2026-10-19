@@ -8,7 +8,7 @@ use time::OffsetDateTime;
 use crate::{
     content_widget::Content,
     emails_widget::EmailsList,
-    mail::{Email, Mailbox},
+    mail::{Email, Mailbox, MailboxWithMetadata},
     mailboxes_widget::MailboxesList,
 };
 
@@ -69,15 +69,15 @@ pub(crate) enum Message {
     ReindexMailbox(Mailbox),
     LoadMoreMails(EmailSelector),
     MailboxChange(Mailbox),
-    MailboxMetadata {
-        mailbox: Mailbox,
-        uid_validity: u32,
-        highest_mod_seq: u64,
-    },
+    MailboxMetadata(MailboxWithMetadata),
     ReindexStatus(ReindexStatus),
     NewEmails {
         mailbox: Mailbox,
         emails: Vec<Email>,
+    },
+    VanishedEmails {
+        mailbox: Mailbox,
+        uids: Vec<u32>,
     },
     Scroll(ScrollDirection),
     FocusNext,
