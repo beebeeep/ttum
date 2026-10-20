@@ -1,5 +1,9 @@
+use std::fs;
+
 use anyhow::{Context, Result};
 use rusqlite::Connection;
+use tracing::debug;
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt};
 use ttum::app::App;
 
 fn init_db(file: &str) -> Result<Connection> {
@@ -11,7 +15,7 @@ fn init_db(file: &str) -> Result<Connection> {
         (),
     )?;
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS mailboxes(name TEXT, account TEXT, hidden INTEGER DEFAULT 0, uid_validity INTEGER, highest_mod_seq INTEGER, PRIMARY KEY(account, name))",
+        "CREATE TABLE IF NOT EXISTS mailboxes(name TEXT, account TEXT, hidden INTEGER DEFAULT 0, uid_validity INTEGER DEFAULT 1, highest_mod_seq INTEGER DEFAULT 1, PRIMARY KEY(account, name))",
         (),
     )?;
     conn.execute(
@@ -63,6 +67,21 @@ fn init_db(file: &str) -> Result<Connection> {
 }
 
 fn main() -> Result<()> {
+    let layer = tracing_subscriber::fmt::layer()
+        .compact()
+        .with_ansi(false)
+        .with_writer(
+            fs::OpenOptions::new()
+                .truncate(true)
+                .create(true)
+                .write(true)
+                .open("ttum.log")?,
+        );
+    let filter = EnvFilter::builder()
+        .parse(format!("info,ttum={}", "debug"))
+        .context("setting up logger")?;
+    let subscriber = tracing_subscriber::registry().with(layer).with(filter);
+    tracing::subscriber::set_global_default(subscriber).context("setting up logger")?;
     let db = init_db("ttum.db").context("initializing database")?;
     let matches = clap::Command::new("ttum mail client")
         .arg(
@@ -72,6 +91,7 @@ fn main() -> Result<()> {
         )
         .get_matches();
     let app = App::load(db, matches.get_flag("update-mailboxes"))?;
+    debug!("starting ttum");
     let r = app.run();
     ratatui::restore();
     if let Err(e) = r {

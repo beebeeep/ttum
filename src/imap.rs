@@ -46,7 +46,7 @@ pub fn watch_mailbox(
     mailbox: &MailboxWithMetadata,
     notifications: mpsc::Sender<Message>,
 ) -> Result<()> {
-    let mut client = account.get_client()?;
+    let mut client = account.get_client().context("connecting to account")?;
     client
         .enable(VecN::from([CapabilityEnable::try_from("QRESYNC").unwrap()]))
         .context("requesting QRESYNC cap")?;
@@ -90,7 +90,7 @@ pub fn watch_mailbox(
         }
     }
     for chunk in uids.chunks(10) {
-        let emails = fetch_emails(&mut client, chunk)?;
+        let emails = fetch_emails(&mut client, chunk).context("fetching new emails")?;
         let _ = notifications.send(Message::NewEmails {
             mailbox: mailbox.inner.clone(),
             emails,
@@ -109,26 +109,42 @@ pub fn watch_mailbox(
             .context("getting HIGHEST_MOD_SEQ")?,
     }))?;
 
-    // fire up IDLE
+    // now start IDLE and watch for changes in mailbox
     let mbox = if mailbox.inner.mailbox.eq_ignore_ascii_case("inbox") {
         io_imap::types::mailbox::Mailbox::Inbox
     } else {
         io_imap::types::mailbox::Mailbox::try_from(mailbox.inner.mailbox.clone().into_string())?
     };
-    let watch = client.watch_mailbox(
-        mbox,
-        &[],
-        ImapMailboxWatchStreamOptions {
-            idle_timeout: Some(Duration::from_secs(10)),
-            ..Default::default()
-        },
-    )?;
+    let watch = account
+        .get_client()
+        .context("initializing IDLE connection")?
+        .watch_mailbox(
+            mbox,
+            &[],
+            ImapMailboxWatchStreamOptions {
+                idle_timeout: Some(Duration::from_secs(10)),
+                ..Default::default()
+            },
+        )
+        .context("starting IDLE")?;
 
     for event in watch {
         let event = event?;
         match event {
-            io_imap::watch::ImapMailboxWatchEvent::EnvelopeAdded { uid, items } => todo!(),
-            io_imap::watch::ImapMailboxWatchEvent::EnvelopeRemoved { uid } => todo!(),
+            io_imap::watch::ImapMailboxWatchEvent::EnvelopeAdded { uid, items: _ } => {
+                let emails =
+                    fetch_emails(&mut client, &[uid.get()]).context("fetching new email")?;
+                notifications.send(Message::NewEmails {
+                    mailbox: mailbox.inner.clone(),
+                    emails: emails,
+                })?;
+            }
+            io_imap::watch::ImapMailboxWatchEvent::EnvelopeRemoved { uid } => {
+                notifications.send(Message::VanishedEmails {
+                    mailbox: mailbox.inner.clone(),
+                    uids: vec![uid.get()],
+                })?;
+            }
             _ => {}
         }
     }

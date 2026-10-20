@@ -5,7 +5,7 @@ use crate::{
     content_widget::Content,
     emails_widget::EmailsList,
     imap::{self, get_account_mailboxes},
-    mail::{self, Account, Address, Email, Envelope, Mailbox},
+    mail::{self, Account, Address, Email, Envelope, Mailbox, MailboxWithMetadata},
     mailboxes_widget::MailboxesList,
     model::{
         self, ActivePane, EmailSelector, Message, Model, ReindexStatus, RunningState,
@@ -22,6 +22,7 @@ use ratatui::{
     widgets::{Block, Clear, LineGauge, ListState, Paragraph, TableState, Widget},
 };
 use time::OffsetDateTime;
+use tracing::error;
 
 pub struct App {
     model: Model,
@@ -33,7 +34,8 @@ pub struct App {
 
 impl App {
     pub fn load(mut db: rusqlite::Connection, update: bool) -> Result<Self> {
-        let mailboxes = mail::get_mailboxes(update, &mut db)?;
+        let mailboxes =
+            MailboxWithMetadata::load_all(update, &mut db).context("loading mailboxes")?;
 
         let (events_tx, events_rx) = mpsc::channel();
         let r = Self {
@@ -41,7 +43,12 @@ impl App {
                 running_state: RunningState::MainView,
                 active_pane: ActivePane::Mailboxes,
                 status_bar_text: String::new(),
-                mbox_pane: MailboxesList::new(&mailboxes),
+                mbox_pane: MailboxesList::new(
+                    &(mailboxes
+                        .iter()
+                        .map(|v| v.inner.clone())
+                        .collect::<Vec<Mailbox>>()),
+                ),
                 emails_pane: EmailsList {
                     emails: VecDeque::new(),
                     selected_email: 0,
@@ -66,6 +73,22 @@ impl App {
 
         let key_events = self.events_tx.clone();
         thread::spawn(move || Self::event_poller(key_events));
+
+        /* this typically hits limit of connections at the server :(
+
+        for mailbox in MailboxWithMetadata::load_all(false, &mut self.db)
+            .context("loading mailboxes to watch")?
+        {
+            let account = Account::load(&mailbox.inner.account, &self.db)
+                .context(format!("loading account {mailbox}"))?;
+            let notifications = self.events_tx.clone();
+            thread::spawn(move || {
+                if let Err(e) = imap::watch_mailbox(&account, &mailbox, notifications.clone()) {
+                    error!("watch thread for {mailbox} failed: {e}");
+                }
+            });
+        }
+        */
 
         terminal.draw(|f| self.view(f))?;
         while self.model.running_state != RunningState::Done {
@@ -226,12 +249,22 @@ impl App {
             Message::Batch(messages) => self.process_batch(messages)?,
             Message::SelectedEmail(uid) => self.load_email(uid)?,
             Message::MailboxMetadata(mailbox) => {
-                mailbox.save_to_db(&self.db)?;
+                mailbox
+                    .save_to_db(&self.db)
+                    .context("updating mailbox metadata")?;
                 None
             }
             Message::NewEmails { mailbox, emails } => self.save_emails(&mailbox, emails)?,
             Message::ToggleMailboxVisibility { mailbox, visible } => {
                 self.set_mailbox_visibility(&mailbox, visible)?
+            }
+            Message::VanishedEmails { mailbox, uids } => {
+                Email::drop_uids(&mailbox, &uids, &mut self.db)?;
+                None
+            }
+            Message::StatusMessage(msg) => {
+                self.model.status_bar_text = msg.into_string();
+                None
             }
         })
     }
@@ -322,6 +355,16 @@ impl App {
         self.model.emails_pane.emails = VecDeque::from(emails);
         self.model.emails_pane.selected_email = 0;
         self.model.emails_pane.table_state.select(Some(0));
+
+        let account = Account::load(&mailbox.account, &self.db)
+            .context(format!("loading account {mailbox}"))?;
+        let notifications = self.events_tx.clone();
+        thread::spawn(move || {
+            if let Err(e) = imap::watch_mailbox(&account, &mailbox, notifications.clone()) {
+                error!("watch thread for {mailbox} failed: {e}");
+            }
+        });
+
         Ok(None)
     }
 

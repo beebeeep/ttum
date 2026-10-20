@@ -139,11 +139,66 @@ pub(crate) struct MailboxWithMetadata {
     pub(crate) highest_mod_seq: u64,
 }
 
+impl Display for MailboxWithMetadata {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.inner.fmt(f)
+    }
+}
+
 impl MailboxWithMetadata {
+    pub(crate) fn load_all(update: bool, db: &mut Connection) -> Result<Vec<Self>> {
+        let mut mailboxes = Vec::with_capacity(3);
+        if !update {
+            let mut stmt = db.prepare(
+            "SELECT account, name, uid_validity, highest_mod_seq FROM mailboxes WHERE hidden = 0 ORDER BY account, lower(name) ASC",
+        )?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                mailboxes.push(MailboxWithMetadata {
+                    inner: Mailbox {
+                        account: row.get(0)?,
+                        mailbox: row.get(1)?,
+                    },
+                    uid_validity: row.get(2)?,
+                    highest_mod_seq: row.get::<_, i64>(3)? as u64,
+                });
+            }
+            return Ok(mailboxes);
+        }
+
+        let accounts = Account::load_all(db).context("loading accounts")?;
+        let tx = db.transaction().context("starting transaction")?;
+        {
+            let mut stmt = tx.prepare(
+                "
+        INSERT into mailboxes (account, name, uid_validity, highest_mod_seq )
+        VALUES (?1, ?2, ?3, ?4)
+        ON CONFLICT (account, name) DO UPDATE SET
+            uid_validity=excluded.uid_validity,
+            highest_mod_seq=excluded.highest_mod_seq
+        ",
+            )?;
+            for (acc_name, account) in &accounts {
+                let mboxes = get_account_mailboxes(account).context("getting account mailboxes")?;
+                for m in mboxes {
+                    stmt.execute((
+                        acc_name,
+                        m.inner.mailbox.clone(),
+                        m.uid_validity,
+                        m.highest_mod_seq as i64,
+                    ))?;
+                    mailboxes.push(m);
+                }
+            }
+        }
+        tx.commit().context("committing transaction")?;
+        Ok(mailboxes)
+    }
+
     pub(crate) fn save_to_db(&self, db: &Connection) -> Result<()> {
         db.execute(
             "
-            INSERT INTO mailboxes(accout, name uid_validity, highest_mod_seq)
+            INSERT INTO mailboxes(account, name, uid_validity, highest_mod_seq)
             VALUES (?1, ?2, ?3, ?4)
             ON CONFLICT (account, name) DO UPDATE SET
                 uid_validity=excluded.uid_validity,
@@ -363,6 +418,16 @@ impl Email {
         tx.commit().context("committing transaction")?;
         Ok(())
     }
+
+    pub(crate) fn drop_uids(mailbox: &Mailbox, uids: &[u32], db: &mut Connection) -> Result<()> {
+        let tx = db.transaction().context("starting transaction")?;
+        let mut stmt =
+            tx.prepare("DROP FROM emails WHERE account = ?1 AND mailbox = ?2 AND uid = ?3")?;
+        for uid in uids {
+            stmt.execute((&mailbox.account, &mailbox.mailbox, uid))?;
+        }
+        Ok(())
+    }
 }
 
 fn parse_str(s: &[u8]) -> Box<str> {
@@ -408,51 +473,6 @@ pub fn connect_to_accounts(
         connections.insert(account, session);
     }
     Ok(connections)
-}
-
-pub(crate) fn get_mailboxes(update: bool, db: &mut Connection) -> Result<Vec<Mailbox>> {
-    let mut mailboxes = Vec::with_capacity(3);
-    if !update {
-        let mut stmt = db.prepare(
-            "SELECT account, name FROM mailboxes WHERE hidden = 0 ORDER BY account, lower(name) ASC",
-        )?;
-        let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
-            mailboxes.push(Mailbox {
-                account: row.get(0)?,
-                mailbox: row.get(1)?,
-            });
-        }
-        return Ok(mailboxes);
-    }
-
-    let accounts = Account::load_all(db).context("loading accounts")?;
-    let tx = db.transaction().context("starting transaction")?;
-    {
-        let mut stmt = tx.prepare(
-            "
-        INSERT into mailboxes (name, account, uid_validity, highest_mod_seq )
-        VALUES (?1, ?2, ?3, ?4)
-        ON CONFLICT (account, name) DO UPDATE SET
-            uid_validity=excluded.uid_validity,
-            highest_mod_seq=excluded.highest_mod_seq
-        ",
-        )?;
-        for (acc_name, account) in &accounts {
-            let mboxes = get_account_mailboxes(account).context("getting account mailboxes")?;
-            for m in mboxes {
-                stmt.execute((
-                    acc_name,
-                    m.inner.mailbox.clone(),
-                    m.uid_validity,
-                    m.highest_mod_seq as i64,
-                ))?;
-                mailboxes.push(m.inner);
-            }
-        }
-    }
-    tx.commit().context("committing transaction")?;
-    Ok(mailboxes)
 }
 
 mod test {

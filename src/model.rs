@@ -71,6 +71,7 @@ pub(crate) enum Message {
     MailboxChange(Mailbox),
     MailboxMetadata(MailboxWithMetadata),
     ReindexStatus(ReindexStatus),
+    StatusMessage(Box<str>),
     NewEmails {
         mailbox: Mailbox,
         emails: Vec<Email>,
