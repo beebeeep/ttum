@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, sync::mpsc, thread};
+use std::{collections::VecDeque, sync::mpsc, thread, time::Duration};
 
 use crate::{
     color_scheme::COLOR_SCHEME,
@@ -74,28 +74,21 @@ impl App {
         let key_events = self.events_tx.clone();
         thread::spawn(move || Self::event_poller(key_events));
 
-        /* this typically hits limit of connections at the server :(
-
-        for mailbox in MailboxWithMetadata::load_all(false, &mut self.db)
-            .context("loading mailboxes to watch")?
-        {
-            let account = Account::load(&mailbox.inner.account, &self.db)
-                .context(format!("loading account {mailbox}"))?;
-            let notifications = self.events_tx.clone();
-            thread::spawn(move || {
-                if let Err(e) = imap::watch_mailbox(&account, &mailbox, notifications.clone()) {
-                    error!("watch thread for {mailbox} failed: {e}");
-                }
-            });
-        }
-        */
+        self.start_mailbox_updaters()
+            .context("starting background mailbox updaters")?;
 
         terminal.draw(|f| self.view(f))?;
         while self.model.running_state != RunningState::Done {
             let mut current_msg = Some(self.events_rx.recv().context("event channel died")?);
 
-            while current_msg.is_some() {
-                current_msg = self.update(current_msg.unwrap())?;
+            while let Some(msg) = current_msg.take() {
+                current_msg = match self.update(msg) {
+                    Ok(msg) => msg,
+                    Err(e) => {
+                        error!("error while processing message: {e:#}");
+                        continue;
+                    }
+                };
             }
             // Render the current view
             terminal.draw(|f| self.view(f))?;
@@ -241,25 +234,34 @@ impl App {
                 self.model.reindex_status = status;
                 None
             }
-            Message::ReindexMailbox(mailbox) => self.start_mailbox_reindex(&mailbox)?,
-            Message::LoadMoreMails(selector) => {
-                self.load_more_emails(&self.model.mbox_pane.current_mailbox(), &selector)?
+            Message::ReindexMailbox(mailbox) => self
+                .start_mailbox_reindex(&mailbox)
+                .context("starting mailbox reindex")?,
+            Message::LoadMoreMails(selector) => self
+                .load_more_emails(&self.model.mbox_pane.current_mailbox(), &selector)
+                .context("loading more emails to view")?,
+            Message::MailboxChange(mailbox) => {
+                self.load_mailbox(&mailbox).context("loading mailbox")?
             }
-            Message::MailboxChange(mailbox) => self.load_mailbox(&mailbox)?,
-            Message::Batch(messages) => self.process_batch(messages)?,
-            Message::SelectedEmail(uid) => self.load_email(uid)?,
+            Message::Batch(messages) => self
+                .process_batch(messages)
+                .context("processing batch message")?,
+            Message::SelectedEmail(uid) => self.load_email(uid).context("loading email content")?,
             Message::MailboxMetadata(mailbox) => {
                 mailbox
                     .save_to_db(&self.db)
                     .context("updating mailbox metadata")?;
                 None
             }
-            Message::NewEmails { mailbox, emails } => self.save_emails(&mailbox, emails)?,
-            Message::ToggleMailboxVisibility { mailbox, visible } => {
-                self.set_mailbox_visibility(&mailbox, visible)?
-            }
+            Message::NewEmails { mailbox, emails } => self
+                .save_emails(&mailbox, emails)
+                .context("saving new emails")?,
+            Message::ToggleMailboxVisibility { mailbox, visible } => self
+                .set_mailbox_visibility(&mailbox, visible)
+                .context("setting mailbox visibility")?,
             Message::VanishedEmails { mailbox, uids } => {
-                Email::drop_uids(&mailbox, &uids, &mut self.db)?;
+                Email::drop_uids(&mailbox, &uids, &mut self.db)
+                    .context("dropping vanished emails")?;
                 None
             }
             Message::StatusMessage(msg) => {
@@ -359,11 +361,11 @@ impl App {
         let account = Account::load(&mailbox.account, &self.db)
             .context(format!("loading account {mailbox}"))?;
         let notifications = self.events_tx.clone();
-        thread::spawn(move || {
-            if let Err(e) = imap::watch_mailbox(&account, &mailbox, notifications.clone()) {
-                error!("watch thread for {mailbox} failed: {e}");
-            }
-        });
+        // thread::spawn(move || {
+        //     if let Err(e) = imap::watch_mailbox(&account, &mailbox, notifications.clone()) {
+        //         error!("watch thread for {mailbox} failed: {e}");
+        //     }
+        // });
 
         Ok(None)
     }
@@ -473,21 +475,23 @@ impl App {
         Ok(result)
     }
 
-    fn get_mailbox_creds(&self, account: &str) -> Result<(url::Url, Box<str>, Box<str>, bool)> {
-        let (host, port, login, password, starttls): (Box<str>, u16, Box<str>, Box<str>, bool) =
-            self.db.query_one(
-                "SELECT host, port, login, password, starttls FROM accounts WHERE name=?1",
-                [account],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-            )?;
-        Ok((
-            url::Url::parse(&format!(
-                "{}://{host}:{port}",
-                if starttls { "imap" } else { "imaps" }
-            ))?,
-            login,
-            password,
-            starttls,
-        ))
+    fn start_mailbox_updaters(&mut self) -> Result<()> {
+        let accounts = Account::load_all(&self.db).context("loading accounts")?;
+        for (_, account) in accounts {
+            let client = account.get_client().context("connecting to account")?;
+            let acc_mailboxes = account
+                .get_mailboxes(&self.db)
+                .context("loading mailboxes for account")?;
+            let notifications = self.events_tx.clone();
+            thread::spawn(move || {
+                imap::mailboxes_update_loop(
+                    client,
+                    acc_mailboxes,
+                    Duration::from_secs(10),
+                    notifications,
+                );
+            });
+        }
+        Ok(())
     }
 }

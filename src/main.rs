@@ -77,9 +77,10 @@ fn main() -> Result<()> {
                 .write(true)
                 .open("ttum.log")?,
         );
-    let filter = EnvFilter::builder()
-        .parse(format!("info,ttum={}", "debug"))
-        .context("setting up logger")?;
+    let filter = EnvFilter::from_default_env();
+    // .parse(format!("info,ttum={}", "debug"))
+    // .parse("")
+    // .context("setting up logger")?;
     let subscriber = tracing_subscriber::registry().with(layer).with(filter);
     tracing::subscriber::set_global_default(subscriber).context("setting up logger")?;
     let db = init_db("ttum.db").context("initializing database")?;

@@ -10,6 +10,8 @@ use io_imap::client::ImapClient;
 use io_imap::client::ImapClientStd;
 use io_imap::client::ImapClientStdConnectOptions;
 use io_imap::rfc3501::login::ImapLoginOptions;
+use io_imap::types::core::VecN;
+use io_imap::types::extensions::enable::CapabilityEnable;
 use native_tls::TlsConnector;
 use native_tls::TlsStream;
 use rusqlite::Connection;
@@ -132,7 +134,7 @@ impl Display for Mailbox {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct MailboxWithMetadata {
     pub(crate) inner: Mailbox,
     pub(crate) uid_validity: u32,
@@ -245,6 +247,25 @@ impl Account {
         })
     }
 
+    pub(crate) fn get_mailboxes(&self, db: &Connection) -> Result<Vec<MailboxWithMetadata>> {
+        let mut mailboxes = Vec::with_capacity(3);
+        let mut stmt = db.prepare(
+            "SELECT account, name, uid_validity, highest_mod_seq FROM mailboxes WHERE account = ?1 AND hidden = 0 ORDER BY lower(name) ASC",
+        )?;
+        let mut rows = stmt.query([&self.name])?;
+        while let Some(row) = rows.next()? {
+            mailboxes.push(MailboxWithMetadata {
+                inner: Mailbox {
+                    account: row.get(0)?,
+                    mailbox: row.get(1)?,
+                },
+                uid_validity: row.get(2)?,
+                highest_mod_seq: row.get::<_, i64>(3)? as u64,
+            });
+        }
+        return Ok(mailboxes);
+    }
+
     pub(crate) fn get_client(&self) -> Result<ImapClientStd> {
         let mut opts = ImapClientStdConnectOptions::default();
         opts.session.starttls = self.starttls;
@@ -254,6 +275,9 @@ impl Account {
         client
             .login(&self.user, &self.password, ImapLoginOptions::default())
             .context("authenticating with IMAP server")?;
+        client
+            .enable(VecN::from([CapabilityEnable::try_from("QRESYNC").unwrap()]))
+            .context("requesting QRESYNC cap")?;
         Ok(client)
     }
 
@@ -421,11 +445,14 @@ impl Email {
 
     pub(crate) fn drop_uids(mailbox: &Mailbox, uids: &[u32], db: &mut Connection) -> Result<()> {
         let tx = db.transaction().context("starting transaction")?;
-        let mut stmt =
-            tx.prepare("DROP FROM emails WHERE account = ?1 AND mailbox = ?2 AND uid = ?3")?;
-        for uid in uids {
-            stmt.execute((&mailbox.account, &mailbox.mailbox, uid))?;
+        {
+            let mut stmt =
+                tx.prepare("DELETE FROM emails WHERE account = ?1 AND mailbox = ?2 AND uid = ?3")?;
+            for uid in uids {
+                stmt.execute((&mailbox.account, &mailbox.mailbox, uid))?;
+            }
         }
+        tx.commit().context("committing transaction")?;
         Ok(())
     }
 }

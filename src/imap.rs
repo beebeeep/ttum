@@ -20,8 +20,9 @@ use io_imap::{
     },
 };
 use mail_parser::MimeHeaders;
-use std::{collections::BTreeMap, num::NonZero, sync::mpsc, time::Duration};
+use std::{collections::BTreeMap, num::NonZero, sync::mpsc, thread, time::Duration};
 use time::{Date, OffsetDateTime, Time, UtcOffset};
+use tracing::{debug, error};
 
 fn parse_datetime(ts: &mail_parser::DateTime) -> Option<OffsetDateTime> {
     Some(OffsetDateTime::new_in_offset(
@@ -41,15 +42,33 @@ fn parse_datetime(ts: &mail_parser::DateTime) -> Option<OffsetDateTime> {
     ))
 }
 
-pub fn watch_mailbox(
-    account: &Account,
-    mailbox: &MailboxWithMetadata,
+/// loop that periodically updates specified mailboxes using provided client.
+pub(crate) fn mailboxes_update_loop(
+    mut client: ImapClientStd,
+    mut mailboxes: Vec<MailboxWithMetadata>,
+    period: Duration,
     notifications: mpsc::Sender<Message>,
+) {
+    loop {
+        for mailbox in mailboxes.iter_mut() {
+            if let Err(e) = update_mailbox(&mut client, mailbox, &notifications) {
+                error!("updating {mailbox}: {e:#}");
+                continue;
+            }
+            let _ = notifications.send(Message::MailboxMetadata(mailbox.clone()));
+        }
+        thread::sleep(period);
+    }
+}
+
+/// fetches new and vanished emails from the mailbox. Sends messages with email changes to provided channel, updates mailbox' metadata in place.
+fn update_mailbox(
+    client: &mut ImapClientStd,
+    mailbox: &mut MailboxWithMetadata,
+    notifications: &mpsc::Sender<Message>,
 ) -> Result<()> {
-    let mut client = account.get_client().context("connecting to account")?;
-    client
-        .enable(VecN::from([CapabilityEnable::try_from("QRESYNC").unwrap()]))
-        .context("requesting QRESYNC cap")?;
+    debug!("getting updates for {mailbox}");
+
     let mbox = mailbox.inner.mailbox.clone().into_string();
     let mbox = ImapMailbox::try_from(mbox).context("getting mailbox")?;
 
@@ -75,6 +94,7 @@ pub fn watch_mailbox(
             uids: mb_metadata
                 .vanished_earlier
                 .iter()
+                .inspect(|e| debug!("email {e} vanished from {mailbox}"))
                 .map(|v| v.get())
                 .collect(),
         })?;
@@ -85,36 +105,42 @@ pub fn watch_mailbox(
     for fetch in &mb_metadata.changed {
         for item in fetch.items.as_ref() {
             if let MessageDataItem::Uid(uid) = item {
+                debug!("new email {uid} for {mailbox}");
                 uids.push(uid.get())
             };
         }
     }
     for chunk in uids.chunks(10) {
-        let emails = fetch_emails(&mut client, chunk).context("fetching new emails")?;
+        let emails = fetch_emails(client, chunk).context("fetching new emails")?;
         let _ = notifications.send(Message::NewEmails {
             mailbox: mailbox.inner.clone(),
             emails,
         });
     }
 
-    // we got all new mail, update mailbox metadata
-    notifications.send(Message::MailboxMetadata(MailboxWithMetadata {
-        inner: mailbox.inner.clone(),
-        uid_validity: mb_metadata
-            .uid_validity
-            .context("getting UIDVALIDITY")?
-            .into(),
-        highest_mod_seq: mb_metadata
-            .highest_mod_seq
-            .context("getting HIGHEST_MOD_SEQ")?,
-    }))?;
+    mailbox.uid_validity = mb_metadata
+        .uid_validity
+        .context("getting UIDVALIDITY")?
+        .into();
+    mailbox.highest_mod_seq = mb_metadata
+        .highest_mod_seq
+        .context("getting HIGHEST_MOD_SEQ")?;
 
-    // now start IDLE and watch for changes in mailbox
-    let mbox = if mailbox.inner.mailbox.eq_ignore_ascii_case("inbox") {
+    Ok(())
+}
+
+/// starts IDLE and watch for changes in mailbox
+pub fn watch_mailbox(
+    account: &Account,
+    mailbox: &Mailbox,
+    notifications: mpsc::Sender<Message>,
+) -> Result<()> {
+    let mbox = if mailbox.mailbox.eq_ignore_ascii_case("inbox") {
         io_imap::types::mailbox::Mailbox::Inbox
     } else {
-        io_imap::types::mailbox::Mailbox::try_from(mailbox.inner.mailbox.clone().into_string())?
+        io_imap::types::mailbox::Mailbox::try_from(mailbox.mailbox.clone().into_string())?
     };
+
     let watch = account
         .get_client()
         .context("initializing IDLE connection")?
@@ -128,20 +154,23 @@ pub fn watch_mailbox(
         )
         .context("starting IDLE")?;
 
+    let mut client = account.get_client().context("getting client for watcher")?;
     for event in watch {
         let event = event?;
         match event {
             io_imap::watch::ImapMailboxWatchEvent::EnvelopeAdded { uid, items: _ } => {
+                debug!("new email {uid} for {mailbox}");
                 let emails =
                     fetch_emails(&mut client, &[uid.get()]).context("fetching new email")?;
                 notifications.send(Message::NewEmails {
-                    mailbox: mailbox.inner.clone(),
+                    mailbox: mailbox.clone(),
                     emails: emails,
                 })?;
             }
             io_imap::watch::ImapMailboxWatchEvent::EnvelopeRemoved { uid } => {
+                debug!("email {uid} vanished from {mailbox}");
                 notifications.send(Message::VanishedEmails {
-                    mailbox: mailbox.inner.clone(),
+                    mailbox: mailbox.clone(),
                     uids: vec![uid.get()],
                 })?;
             }
