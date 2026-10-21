@@ -22,7 +22,7 @@ use ratatui::{
     widgets::{Block, Clear, LineGauge, ListState, Paragraph, TableState, Widget},
 };
 use time::OffsetDateTime;
-use tracing::error;
+use tracing::{debug, error};
 
 pub struct App {
     model: Model,
@@ -76,6 +76,8 @@ impl App {
 
         self.start_mailbox_updaters()
             .context("starting background mailbox updaters")?;
+        self.start_inbox_watchers()
+            .context("starting background inbox watchers")?;
 
         terminal.draw(|f| self.view(f))?;
         while self.model.running_state != RunningState::Done {
@@ -478,18 +480,38 @@ impl App {
     fn start_mailbox_updaters(&mut self) -> Result<()> {
         let accounts = Account::load_all(&self.db).context("loading accounts")?;
         for (_, account) in accounts {
-            let client = account.get_client().context("connecting to account")?;
+            let notifications = self.events_tx.clone();
             let acc_mailboxes = account
                 .get_mailboxes(&self.db)
                 .context("loading mailboxes for account")?;
-            let notifications = self.events_tx.clone();
             thread::spawn(move || {
+                let Ok(client) = account.get_client().context("connecting to account") else {
+                    error!("failed to get client for {}", account.name);
+                    return;
+                };
                 imap::mailboxes_update_loop(
                     client,
                     acc_mailboxes,
-                    Duration::from_secs(10),
+                    Duration::from_secs(60),
                     notifications,
                 );
+            });
+        }
+        Ok(())
+    }
+
+    fn start_inbox_watchers(&mut self) -> Result<()> {
+        let accounts = Account::load_all(&self.db).context("loading accounts")?;
+        for (_, account) in accounts {
+            let notifications = self.events_tx.clone();
+            thread::spawn(move || {
+                let mailbox = Mailbox {
+                    account: account.name.clone(),
+                    mailbox: Box::from("Inbox"),
+                };
+                if let Err(e) = imap::watch_mailbox(&account, &mailbox, notifications) {
+                    error!("inbox watcher terminated: {e:#}");
+                }
             });
         }
         Ok(())

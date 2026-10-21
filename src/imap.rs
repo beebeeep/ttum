@@ -94,7 +94,7 @@ fn update_mailbox(
             uids: mb_metadata
                 .vanished_earlier
                 .iter()
-                .inspect(|e| debug!("email {e} vanished from {mailbox}"))
+                .inspect(|e| debug!("update_mailbox: email {e} vanished from {mailbox}"))
                 .map(|v| v.get())
                 .collect(),
         })?;
@@ -105,7 +105,7 @@ fn update_mailbox(
     for fetch in &mb_metadata.changed {
         for item in fetch.items.as_ref() {
             if let MessageDataItem::Uid(uid) = item {
-                debug!("new email {uid} for {mailbox}");
+                debug!("update_mailbox: new email {uid} for {mailbox}");
                 uids.push(uid.get())
             };
         }
@@ -145,7 +145,7 @@ pub fn watch_mailbox(
         .get_client()
         .context("initializing IDLE connection")?
         .watch_mailbox(
-            mbox,
+            mbox.clone(),
             &[],
             ImapMailboxWatchStreamOptions {
                 idle_timeout: Some(Duration::from_secs(10)),
@@ -155,11 +155,14 @@ pub fn watch_mailbox(
         .context("starting IDLE")?;
 
     let mut client = account.get_client().context("getting client for watcher")?;
+    let _ = client
+        .select(mbox, ImapMailboxSelectOptions::default())
+        .context("selecting mailbox")?;
     for event in watch {
         let event = event?;
         match event {
             io_imap::watch::ImapMailboxWatchEvent::EnvelopeAdded { uid, items: _ } => {
-                debug!("new email {uid} for {mailbox}");
+                debug!("watch_mailbox: new email {uid} for {mailbox}");
                 let emails =
                     fetch_emails(&mut client, &[uid.get()]).context("fetching new email")?;
                 notifications.send(Message::NewEmails {
@@ -168,7 +171,7 @@ pub fn watch_mailbox(
                 })?;
             }
             io_imap::watch::ImapMailboxWatchEvent::EnvelopeRemoved { uid } => {
-                debug!("email {uid} vanished from {mailbox}");
+                debug!("watch_mailbox: email {uid} vanished from {mailbox}");
                 notifications.send(Message::VanishedEmails {
                     mailbox: mailbox.clone(),
                     uids: vec![uid.get()],

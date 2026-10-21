@@ -111,7 +111,10 @@ impl Widget for &mut MailboxesList {
             .fg(COLOR_SCHEME.cursor_fg)
             .bg(COLOR_SCHEME.cursor_bg);
         let list = List::from_iter(self.mailboxes.iter().map(|(account, mbox)| match mbox {
-            Some(mbox) => Text::styled(format!("{}{mbox}", getMailboxIcon(mbox)), Style::default()),
+            Some(mbox) => Text::styled(
+                format!("{}{mbox}", get_mailbox_icon(mbox)),
+                Style::default(),
+            ),
             None => Text::styled(String::from(account.as_ref()), Style::default().bold()),
         }))
         .style(default_style)
@@ -136,7 +139,7 @@ impl Widget for &mut MailboxesList {
     }
 }
 
-fn getMailboxIcon(mailbox: &str) -> &'static str {
+fn get_mailbox_icon(mailbox: &str) -> &'static str {
     match mailbox {
         "Inbox" => " 📩",
         "Sent" | "Sent Messages" | "SentBox" => " 📨",

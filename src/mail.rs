@@ -17,6 +17,7 @@ use native_tls::TlsStream;
 use rusqlite::Connection;
 use rusqlite::types::ToSqlOutput;
 use time::OffsetDateTime;
+use tracing::debug;
 
 enum AddrType {
     From,
@@ -353,6 +354,16 @@ impl Default for Email {
     }
 }
 
+impl Display for Email {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "<uid {}, from {:?}, to {:?}>",
+            self.uid, self.from, self.to
+        )
+    }
+}
+
 impl Email {
     pub(crate) fn load_from_db(mailbox: &Mailbox, uid: u32, db: &Connection) -> Result<Self> {
         let email = db
@@ -389,6 +400,7 @@ impl Email {
     }
 
     pub(crate) fn save_to_db(&self, mailbox: &Mailbox, db: &mut Connection) -> Result<()> {
+        debug!("saving email {self}");
         let tx = db.transaction().context("starting transaction")?;
         tx.execute(
             "INSERT INTO emails (
