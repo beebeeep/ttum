@@ -1,4 +1,9 @@
-use std::{collections::VecDeque, sync::mpsc, thread, time::Duration};
+use std::{
+    collections::VecDeque,
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
+};
 
 use crate::{
     color_scheme::COLOR_SCHEME,
@@ -358,18 +363,7 @@ impl App {
         };
         self.model.emails_pane.emails = VecDeque::from(emails);
         self.model.emails_pane.selected_email = 0;
-        self.model.emails_pane.table_state.select(Some(0));
-
-        let account = Account::load(&mailbox.account, &self.db)
-            .context(format!("loading account {mailbox}"))?;
-        let notifications = self.events_tx.clone();
-        // thread::spawn(move || {
-        //     if let Err(e) = imap::watch_mailbox(&account, &mailbox, notifications.clone()) {
-        //         error!("watch thread for {mailbox} failed: {e}");
-        //     }
-        // });
-
-        Ok(None)
+        Ok(self.model.emails_pane.select_email(0))
     }
 
     fn load_more_emails(
@@ -435,6 +429,7 @@ impl App {
         selector: &EmailSelector,
         amount: i64,
     ) -> Result<Vec<Envelope>> {
+        let start = Instant::now();
         let condition = match selector {
             EmailSelector::Latest => "1",
             EmailSelector::Before { ts, uid } => {
@@ -474,6 +469,11 @@ impl App {
             result.push(msg);
         }
 
+        debug!(
+            "loaded {} emails from {mailbox} in {:#?}",
+            result.len(),
+            start.elapsed()
+        );
         Ok(result)
     }
 

@@ -101,6 +101,7 @@ impl EmailsList {
             let _ = self.emails.pop_front(); // discard email from the head
         }
     }
+
     pub(crate) fn prepend_emails(&mut self, emails: Vec<Envelope>) {
         let added = emails.len();
         *self.table_state.offset_mut() += added;
@@ -113,6 +114,15 @@ impl EmailsList {
             self.emails.push_front(email);
             let _ = self.emails.pop_back(); // discard email from the tail
         }
+    }
+
+    pub(crate) fn select_email(&mut self, index: usize) -> Option<Message> {
+        if index >= self.emails.len() {
+            return None;
+        }
+        self.selected_email = index;
+        self.table_state.select(Some(index));
+        Some(Message::SelectedEmail(self.emails[self.selected_email].uid))
     }
 }
 
