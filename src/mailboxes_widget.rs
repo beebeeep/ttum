@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    cmp::Ordering::{self, Equal},
+    collections::{HashMap, HashSet},
+};
 
 use ratatui::{
     style::Style,
@@ -29,8 +32,15 @@ impl MailboxesList {
                 .or_insert(vec![m.mailbox.as_ref()]);
         }
         let mut mailboxes = Vec::with_capacity(mm.len() * 3);
-        for (acc, mboxes) in mm {
+        for (acc, mut mboxes) in mm {
             mailboxes.push((Box::from(acc), None));
+            mboxes.sort_by(|a, _| {
+                if *a == "Inbox" {
+                    Ordering::Less
+                } else {
+                    Ordering::Equal
+                }
+            });
             for mbox in mboxes {
                 mailboxes.push((Box::from(acc), Some(Box::from(mbox))));
             }
@@ -101,7 +111,7 @@ impl Widget for &mut MailboxesList {
             .fg(COLOR_SCHEME.cursor_fg)
             .bg(COLOR_SCHEME.cursor_bg);
         let list = List::from_iter(self.mailboxes.iter().map(|(account, mbox)| match mbox {
-            Some(mbox) => Text::styled(format!("  {mbox}"), Style::default()),
+            Some(mbox) => Text::styled(format!("{}{mbox}", getMailboxIcon(mbox)), Style::default()),
             None => Text::styled(String::from(account.as_ref()), Style::default().bold()),
         }))
         .style(default_style)
@@ -123,5 +133,17 @@ impl Widget for &mut MailboxesList {
         let list_area = block.inner(area);
         block.render(area, buf);
         StatefulWidget::render(list, list_area, buf, &mut self.list_state);
+    }
+}
+
+fn getMailboxIcon(mailbox: &str) -> &'static str {
+    match mailbox {
+        "Inbox" => " 📩",
+        "Sent" | "Sent Messages" | "SentBox" => " 📨",
+        "Archive" | "Archives" | "All Mail" => " 🗃️",
+        "Spam" | "Junk" => " 🔥",
+        "Draft" | "Drafts" | "DraftBox" => " 📄",
+        "Trash" => " 🗑️",
+        _ => " 📁",
     }
 }
