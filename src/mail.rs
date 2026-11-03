@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::net::TcpStream;
+use std::time::Instant;
 
 use crate::imap::get_account_mailboxes;
+use crate::model::EmailSelector;
 use crate::model::Message;
 use anyhow::Context;
 use anyhow::Result;
@@ -123,7 +125,7 @@ pub(crate) struct Envelope {
     pub(crate) thread_root: Option<Box<str>>,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub(crate) struct Mailbox {
     pub(crate) account: Box<str>,
     pub(crate) mailbox: Box<str>,
@@ -512,6 +514,60 @@ pub fn connect_to_accounts(
         connections.insert(account, session);
     }
     Ok(connections)
+}
+
+pub(crate) fn load_mbox_emails(
+    mailbox: &Mailbox,
+    selector: &EmailSelector,
+    amount: i64,
+    db: &Connection,
+) -> Result<Vec<Envelope>> {
+    let start = Instant::now();
+    let condition = match selector {
+        EmailSelector::Latest => "1",
+        EmailSelector::Before { ts, uid } => {
+            &format!("ts <= {} AND e.uid < {}", ts.unix_timestamp(), uid)
+        }
+        EmailSelector::After { ts, uid } => {
+            &format!("ts >= {} AND e.uid > {}", ts.unix_timestamp(), uid)
+        }
+    };
+    let mut stmt = db.prepare(&format!("SELECT e.uid, a.name, a.email, message_id, in_reply_to, COALESCE(timestamp, internal_timestamp) ts, subject
+            FROM emails e
+            JOIN email_addresses a
+            ON e.account = a.account AND e.mailbox = a.mailbox AND e.uid = a.uid
+            WHERE a.type = 1 AND e.account = ?1 AND e.mailbox = ?2 AND ( {} )
+            ORDER BY ts DESC, e.uid DESC
+            LIMIT ?3", condition)
+        )?;
+    let mut rows = stmt.query((&mailbox.account, &mailbox.mailbox, amount))?;
+    let mut result = Vec::with_capacity(10);
+    while let Some(row) = rows.next()? {
+        let ts: i64 = row.get(5)?;
+        let timestamp = OffsetDateTime::from_unix_timestamp(ts)?;
+        let subject: Option<Box<str>> = row.get(6)?;
+        let msg = Envelope {
+            uid: row.get(0)?,
+            subject: subject.unwrap_or(Box::from("")),
+            timestamp,
+            addresses: vec![Address {
+                email: row.get(2)?,
+                name: row.get(1)?,
+            }],
+            seen: false,
+            id: row.get(2)?,
+            in_reply_to: row.get(3)?,
+            thread_root: None,
+        };
+        result.push(msg);
+    }
+
+    debug!(
+        "loaded {} emails from {mailbox} in {:#?}",
+        result.len(),
+        start.elapsed()
+    );
+    Ok(result)
 }
 
 mod test {

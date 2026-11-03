@@ -69,6 +69,7 @@ pub(crate) enum Message {
     ReindexMailbox(Mailbox),
     LoadMoreMails(EmailSelector),
     MailboxChange(Mailbox),
+    MailboxRefresh(Mailbox),
     MailboxMetadata(MailboxWithMetadata),
     ReindexStatus(ReindexStatus),
     StatusMessage(Box<str>),

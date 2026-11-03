@@ -224,7 +224,10 @@ fn fetch_emails(client: &mut ImapClientStd, uids: &[u32]) -> Result<Vec<Email>> 
             }),
         ) = (items.next(), items.next(), items.next(), items.next())
         else {
-            return Err(anyhow!("unexpected fetch result"));
+            return Err(anyhow!(format!(
+                "unexpected fetch result: {:?}",
+                items.collect::<Vec<_>>()
+            )));
         };
 
         let body = body.into_option().context("no email body")?;

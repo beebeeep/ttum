@@ -145,10 +145,11 @@ impl Widget for &mut EmailsList {
                 .map(String::from)
                 .collect::<Vec<String>>()
                 .join(", ");
+            let local_offset = time::UtcOffset::current_local_offset().unwrap();
             let ts = if OffsetDateTime::now_utc() - msg.timestamp < Duration::from_hours(24) {
-                msg.timestamp.format(&FMT_TIME_ONLY)
+                msg.timestamp.to_offset(local_offset).format(&FMT_TIME_ONLY)
             } else {
-                msg.timestamp.format(&FMT_DATETIME)
+                msg.timestamp.to_offset(local_offset).format(&FMT_DATETIME)
             }
             .unwrap();
             Row::new(vec![ts, addresses, msg.subject.clone().into_string()])

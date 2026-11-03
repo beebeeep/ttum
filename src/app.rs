@@ -10,7 +10,9 @@ use crate::{
     content_widget::Content,
     emails_widget::EmailsList,
     imap::{self, get_account_mailboxes},
-    mail::{self, Account, Address, Email, Envelope, Mailbox, MailboxWithMetadata},
+    mail::{
+        self, Account, Address, Email, Envelope, Mailbox, MailboxWithMetadata, load_mbox_emails,
+    },
     mailboxes_widget::MailboxesList,
     model::{
         self, ActivePane, EmailSelector, Message, Model, ReindexStatus, RunningState,
@@ -43,7 +45,7 @@ impl App {
             MailboxWithMetadata::load_all(update, &mut db).context("loading mailboxes")?;
 
         let (events_tx, events_rx) = mpsc::channel();
-        let r = Self {
+        let mut r = Self {
             model: Model {
                 running_state: RunningState::MainView,
                 active_pane: ActivePane::Mailboxes,
@@ -69,6 +71,8 @@ impl App {
         };
 
         // r.model.emails_pane.table_state.select_next();
+        r.model.mbox_pane.scroll(ScrollDirection::Down);
+        r.load_mailbox(&r.model.mbox_pane.current_mailbox())?;
 
         Ok(r)
     }
@@ -250,6 +254,9 @@ impl App {
             Message::MailboxChange(mailbox) => {
                 self.load_mailbox(&mailbox).context("loading mailbox")?
             }
+            Message::MailboxRefresh(mailbox) => self
+                .refresh_mailbox(&mailbox)
+                .context("refreshing mailbox")?,
             Message::Batch(messages) => self
                 .process_batch(messages)
                 .context("processing batch message")?,
@@ -263,14 +270,12 @@ impl App {
             Message::NewEmails { mailbox, emails } => self
                 .save_emails(&mailbox, emails)
                 .context("saving new emails")?,
+            Message::VanishedEmails { mailbox, uids } => self
+                .drop_emails(&mailbox, uids)
+                .context("dropping emails")?,
             Message::ToggleMailboxVisibility { mailbox, visible } => self
                 .set_mailbox_visibility(&mailbox, visible)
                 .context("setting mailbox visibility")?,
-            Message::VanishedEmails { mailbox, uids } => {
-                Email::drop_uids(&mailbox, &uids, &mut self.db)
-                    .context("dropping vanished emails")?;
-                None
-            }
             Message::StatusMessage(msg) => {
                 self.model.status_bar_text = msg.into_string();
                 None
@@ -320,7 +325,22 @@ impl App {
         for email in emails {
             email.save_to_db(mailbox, &mut self.db)?;
         }
-        Ok(None)
+        let current_mbox = self.model.mbox_pane.current_mailbox();
+        if &current_mbox == mailbox {
+            Ok(Some(Message::MailboxRefresh(current_mbox)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn drop_emails(&mut self, mailbox: &Mailbox, uids: Vec<u32>) -> Result<Option<Message>> {
+        Email::drop_uids(mailbox, &uids, &mut self.db).context("dropping vanished emails")?;
+        let current_mbox = self.model.mbox_pane.current_mailbox();
+        if &current_mbox == mailbox {
+            Ok(Some(Message::MailboxRefresh(current_mbox)))
+        } else {
+            Ok(None)
+        }
     }
 
     fn handle_scroll(&mut self, d: ScrollDirection) -> Option<Message> {
@@ -358,7 +378,7 @@ impl App {
 
     fn load_mailbox(&mut self, mailbox: &Mailbox) -> Result<Option<Message>> {
         let emails = {
-            self.load_mbox_emails(mailbox, &EmailSelector::Latest, 50)
+            load_mbox_emails(mailbox, &EmailSelector::Latest, 50, &self.db)
                 .context("loading mailbox")?
         };
         self.model.emails_pane.emails = VecDeque::from(emails);
@@ -366,15 +386,61 @@ impl App {
         Ok(self.model.emails_pane.select_email(0))
     }
 
+    fn refresh_mailbox(&mut self, mailbox: &Mailbox) -> Result<Option<Message>> {
+        let emails = &self.model.emails_pane.emails;
+        let current_idx = self.model.emails_pane.selected_email;
+        let current_email = &emails[current_idx];
+        let emails_before = load_mbox_emails(
+            mailbox,
+            &EmailSelector::Before {
+                ts: current_email.timestamp,
+                uid: current_email.uid,
+            },
+            current_idx as i64 + 10,
+            &self.db,
+        )?;
+        let emails_after = load_mbox_emails(
+            mailbox,
+            &EmailSelector::After {
+                ts: current_email.timestamp,
+                uid: current_email.uid,
+            },
+            (emails.len() - current_idx) as i64 + 10,
+            &self.db,
+        )?;
+        let new_idx = current_idx + emails_after.len();
+
+        debug!(
+            "current idx {} new idx {} emails before {} after {}",
+            current_idx,
+            new_idx,
+            emails_before.len(),
+            emails_after.len()
+        );
+
+        {
+            let emails = &mut self.model.emails_pane.emails;
+            emails.drain(0..current_idx);
+            emails.drain(current_idx + 1..);
+            for email in emails_after.into_iter().rev() {
+                emails.push_front(email);
+            }
+            for email in emails_before.into_iter().rev() {
+                emails.push_back(email);
+            }
+        }
+
+        self.model.emails_pane.select_email(new_idx);
+        Ok(None)
+    }
+
     fn load_more_emails(
         &mut self,
         mailbox: &Mailbox,
         selector: &EmailSelector,
     ) -> Result<Option<Message>> {
-        let emails = {
-            self.load_mbox_emails(mailbox, selector, 10)
-                .context("loading mailbox")?
-        };
+        let emails =
+            load_mbox_emails(mailbox, selector, 10, &self.db).context("loading mailbox")?;
         match selector {
             EmailSelector::Latest => {}
             EmailSelector::Before { .. } => self.model.emails_pane.append_emails(emails),
@@ -421,60 +487,6 @@ impl App {
             },
         );
         Ok(None)
-    }
-
-    fn load_mbox_emails(
-        &self,
-        mailbox: &Mailbox,
-        selector: &EmailSelector,
-        amount: i64,
-    ) -> Result<Vec<Envelope>> {
-        let start = Instant::now();
-        let condition = match selector {
-            EmailSelector::Latest => "1",
-            EmailSelector::Before { ts, uid } => {
-                &format!("ts <= {} AND e.uid < {}", ts.unix_timestamp(), uid)
-            }
-            EmailSelector::After { ts, uid } => {
-                &format!("ts >= {} AND e.uid > {}", ts.unix_timestamp(), uid)
-            }
-        };
-        let mut stmt = self.db.prepare(&format!("SELECT e.uid, a.name, a.email, message_id, in_reply_to, COALESCE(timestamp, internal_timestamp) ts, subject
-            FROM emails e
-            JOIN email_addresses a
-            ON e.account = a.account AND e.mailbox = a.mailbox AND e.uid = a.uid
-            WHERE a.type = 1 AND e.account = ?1 AND e.mailbox = ?2 AND ( {} )
-            ORDER BY ts DESC, e.uid DESC
-            LIMIT ?3", condition)
-        )?;
-        let mut rows = stmt.query((&mailbox.account, &mailbox.mailbox, amount))?;
-        let mut result = Vec::with_capacity(10);
-        while let Some(row) = rows.next()? {
-            let ts: i64 = row.get(5)?;
-            let timestamp = OffsetDateTime::from_unix_timestamp(ts)?;
-            let subject: Option<Box<str>> = row.get(6)?;
-            let msg = Envelope {
-                uid: row.get(0)?,
-                subject: subject.unwrap_or(Box::from("")),
-                timestamp,
-                addresses: vec![Address {
-                    email: row.get(2)?,
-                    name: row.get(1)?,
-                }],
-                seen: false,
-                id: row.get(2)?,
-                in_reply_to: row.get(3)?,
-                thread_root: None,
-            };
-            result.push(msg);
-        }
-
-        debug!(
-            "loaded {} emails from {mailbox} in {:#?}",
-            result.len(),
-            start.elapsed()
-        );
-        Ok(result)
     }
 
     fn start_mailbox_updaters(&mut self) -> Result<()> {
