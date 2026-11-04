@@ -41,6 +41,7 @@ impl EmailsList {
                     Some(Message::LoadMoreMails(EmailSelector::After {
                         ts: self.emails[self.selected_email].timestamp,
                         uid: self.emails[self.selected_email].uid,
+                        inclusive: false,
                     }))
                 } else {
                     None
@@ -55,6 +56,7 @@ impl EmailsList {
                     Some(Message::LoadMoreMails(EmailSelector::Before {
                         ts: self.emails[self.selected_email].timestamp,
                         uid: self.emails[self.selected_email].uid,
+                        inclusive: false,
                     }))
                 } else {
                     None

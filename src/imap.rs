@@ -162,7 +162,7 @@ pub fn watch_mailbox(
         let event = event?;
         match event {
             io_imap::watch::ImapMailboxWatchEvent::EnvelopeAdded { uid, items: _ } => {
-                debug!("watch_mailbox: new email {uid} for {mailbox}");
+                client.noop()?; // this triggers refresh of the connection
                 let emails =
                     fetch_emails(&mut client, &[uid.get()]).context("fetching new email")?;
                 notifications.send(Message::NewEmails {

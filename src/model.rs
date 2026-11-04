@@ -15,8 +15,16 @@ use crate::{
 #[derive(Debug, Clone)]
 pub(crate) enum EmailSelector {
     Latest,
-    Before { ts: OffsetDateTime, uid: u32 },
-    After { ts: OffsetDateTime, uid: u32 },
+    Before {
+        ts: OffsetDateTime,
+        uid: u32,
+        inclusive: bool,
+    },
+    After {
+        ts: OffsetDateTime,
+        uid: u32,
+        inclusive: bool,
+    },
 }
 
 #[derive(Default, Debug)]

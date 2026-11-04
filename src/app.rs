@@ -322,6 +322,7 @@ impl App {
     }
 
     fn save_emails(&mut self, mailbox: &Mailbox, emails: Vec<Email>) -> Result<Option<Message>> {
+        debug!("saving {} emails", emails.len());
         for email in emails {
             email.save_to_db(mailbox, &mut self.db)?;
         }
@@ -390,13 +391,15 @@ impl App {
         let emails = &self.model.emails_pane.emails;
         let current_idx = self.model.emails_pane.selected_email;
         let current_email = &emails[current_idx];
+        let selected_uid = current_email.uid;
         let emails_before = load_mbox_emails(
             mailbox,
             &EmailSelector::Before {
                 ts: current_email.timestamp,
                 uid: current_email.uid,
+                inclusive: false,
             },
-            current_idx as i64 + 10,
+            50,
             &self.db,
         )?;
         let emails_after = load_mbox_emails(
@@ -404,11 +407,12 @@ impl App {
             &EmailSelector::After {
                 ts: current_email.timestamp,
                 uid: current_email.uid,
+                inclusive: true,
             },
-            (emails.len() - current_idx) as i64 + 10,
+            50,
             &self.db,
         )?;
-        let new_idx = current_idx + emails_after.len();
+        let mut new_idx = emails_after.len();
 
         debug!(
             "current idx {} new idx {} emails before {} after {}",
@@ -420,18 +424,19 @@ impl App {
 
         {
             let emails = &mut self.model.emails_pane.emails;
-            emails.drain(0..current_idx);
-            emails.drain(current_idx + 1..);
-            for email in emails_after.into_iter().rev() {
-                emails.push_front(email);
+            emails.clear();
+            for (i, email) in emails_after.into_iter().enumerate() {
+                if email.uid == selected_uid {
+                    new_idx = i
+                }
+                emails.push_back(email);
             }
-            for email in emails_before.into_iter().rev() {
+            for email in emails_before {
                 emails.push_back(email);
             }
         }
 
-        self.model.emails_pane.select_email(new_idx);
-        Ok(None)
+        Ok(self.model.emails_pane.select_email(new_idx))
     }
 
     fn load_more_emails(

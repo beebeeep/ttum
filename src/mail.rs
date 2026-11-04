@@ -360,8 +360,11 @@ impl Display for Email {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "<uid {}, from {:?}, to {:?}>",
-            self.uid, self.from, self.to
+            "<subject: '{:?}', uid {}, from {:?}, to {:?}>",
+            self.subject.as_ref(),
+            self.uid,
+            self.from,
+            self.to
         )
     }
 }
@@ -402,7 +405,7 @@ impl Email {
     }
 
     pub(crate) fn save_to_db(&self, mailbox: &Mailbox, db: &mut Connection) -> Result<()> {
-        debug!("saving email {self}");
+        debug!("saving email {self} to {mailbox}");
         let tx = db.transaction().context("starting transaction")?;
         tx.execute(
             "INSERT INTO emails (
@@ -525,12 +528,18 @@ pub(crate) fn load_mbox_emails(
     let start = Instant::now();
     let condition = match selector {
         EmailSelector::Latest => "1",
-        EmailSelector::Before { ts, uid } => {
-            &format!("ts <= {} AND e.uid < {}", ts.unix_timestamp(), uid)
-        }
-        EmailSelector::After { ts, uid } => {
-            &format!("ts >= {} AND e.uid > {}", ts.unix_timestamp(), uid)
-        }
+        EmailSelector::Before { ts, uid, inclusive } => &format!(
+            "ts <= {} AND e.uid {} {}",
+            ts.unix_timestamp(),
+            if *inclusive { "<=" } else { "<" },
+            uid
+        ),
+        EmailSelector::After { ts, uid, inclusive } => &format!(
+            "ts >= {} AND e.uid {} {}",
+            ts.unix_timestamp(),
+            if *inclusive { ">=" } else { ">" },
+            uid
+        ),
     };
     let mut stmt = db.prepare(&format!("SELECT e.uid, a.name, a.email, message_id, in_reply_to, COALESCE(timestamp, internal_timestamp) ts, subject
             FROM emails e
