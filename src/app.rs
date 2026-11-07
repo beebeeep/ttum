@@ -389,6 +389,9 @@ impl App {
 
     fn refresh_mailbox(&mut self, mailbox: &Mailbox) -> Result<Option<Message>> {
         let emails = &self.model.emails_pane.emails;
+        if emails.is_empty() {
+            return self.load_mailbox(mailbox);
+        }
         let current_idx = self.model.emails_pane.selected_email;
         let current_email = &emails[current_idx];
         let selected_uid = current_email.uid;

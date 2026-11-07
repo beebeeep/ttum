@@ -159,10 +159,16 @@ pub fn watch_mailbox(
         .select(mbox, ImapMailboxSelectOptions::default())
         .context("selecting mailbox")?;
     for event in watch {
-        let event = event?;
+        let event = match event {
+            Ok(event) => event,
+            Err(e) => {
+                error!("IDLE event error: {e:#}");
+                continue;
+            }
+        };
         match event {
             io_imap::watch::ImapMailboxWatchEvent::EnvelopeAdded { uid, items: _ } => {
-                client.noop()?; // this triggers refresh of the connection
+                client.noop().context("NOOP command")?; // this triggers refresh of the connection
                 let emails =
                     fetch_emails(&mut client, &[uid.get()]).context("fetching new email")?;
                 notifications.send(Message::NewEmails {
