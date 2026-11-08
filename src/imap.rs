@@ -44,18 +44,30 @@ fn parse_datetime(ts: &mail_parser::DateTime) -> Option<OffsetDateTime> {
 
 /// loop that periodically updates specified mailboxes using provided client.
 pub(crate) fn mailboxes_update_loop(
-    mut client: ImapClientStd,
+    account: Account,
     mut mailboxes: Vec<MailboxWithMetadata>,
     period: Duration,
     notifications: mpsc::Sender<Message>,
 ) {
     loop {
+        let mut client = match account.get_client() {
+            Ok(client) => client,
+            Err(e) => {
+                error!("connecting to {}: {e:#}", account.name);
+                thread::sleep(period);
+                continue;
+            }
+        };
+
         for mailbox in mailboxes.iter_mut() {
             if let Err(e) = update_mailbox(&mut client, mailbox, &notifications) {
                 error!("updating {mailbox}: {e:#}");
                 continue;
             }
             let _ = notifications.send(Message::MailboxMetadata(mailbox.clone()));
+        }
+        if let Err(e) = client.close() {
+            error!("disconnecting from {}: {e:#}", account.name);
         }
         thread::sleep(period);
     }
@@ -159,13 +171,7 @@ pub fn watch_mailbox(
         .select(mbox, ImapMailboxSelectOptions::default())
         .context("selecting mailbox")?;
     for event in watch {
-        let event = match event {
-            Ok(event) => event,
-            Err(e) => {
-                error!("IDLE event error: {e:#}");
-                continue;
-            }
-        };
+        let event = event.context("watch event error")?;
         match event {
             io_imap::watch::ImapMailboxWatchEvent::EnvelopeAdded { uid, items: _ } => {
                 client.noop().context("NOOP command")?; // this triggers refresh of the connection

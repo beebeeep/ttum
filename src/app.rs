@@ -388,12 +388,10 @@ impl App {
     }
 
     fn refresh_mailbox(&mut self, mailbox: &Mailbox) -> Result<Option<Message>> {
-        let emails = &self.model.emails_pane.emails;
-        if emails.is_empty() {
+        let Some(current_email) = self.model.emails_pane.current_email() else {
+            debug!("no current email");
             return self.load_mailbox(mailbox);
-        }
-        let current_idx = self.model.emails_pane.selected_email;
-        let current_email = &emails[current_idx];
+        };
         let selected_uid = current_email.uid;
         let emails_before = load_mbox_emails(
             mailbox,
@@ -416,14 +414,6 @@ impl App {
             &self.db,
         )?;
         let mut new_idx = emails_after.len();
-
-        debug!(
-            "current idx {} new idx {} emails before {} after {}",
-            current_idx,
-            new_idx,
-            emails_before.len(),
-            emails_after.len()
-        );
 
         {
             let emails = &mut self.model.emails_pane.emails;
@@ -505,12 +495,8 @@ impl App {
                 .get_mailboxes(&self.db)
                 .context("loading mailboxes for account")?;
             thread::spawn(move || {
-                let Ok(client) = account.get_client().context("connecting to account") else {
-                    error!("failed to get client for {}", account.name);
-                    return;
-                };
                 imap::mailboxes_update_loop(
-                    client,
+                    account,
                     acc_mailboxes,
                     Duration::from_secs(60),
                     notifications,
@@ -529,8 +515,10 @@ impl App {
                     account: account.name.clone(),
                     mailbox: Box::from("Inbox"),
                 };
-                if let Err(e) = imap::watch_mailbox(&account, &mailbox, notifications) {
-                    error!("inbox watcher terminated: {e:#}");
+                loop {
+                    if let Err(e) = imap::watch_mailbox(&account, &mailbox, notifications.clone()) {
+                        error!("inbox watcher terminated: {e:#}");
+                    }
                 }
             });
         }

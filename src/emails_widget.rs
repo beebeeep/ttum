@@ -87,6 +87,10 @@ impl EmailsList {
         }
     }
 
+    pub(crate) fn current_email(&self) -> Option<&Envelope> {
+        self.emails.get(self.selected_email)
+    }
+
     pub(crate) fn append_emails(&mut self, emails: Vec<Envelope>) {
         let added = emails.len();
         let o = self.table_state.offset_mut();
