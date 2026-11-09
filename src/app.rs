@@ -9,14 +9,11 @@ use crate::{
     color_scheme::COLOR_SCHEME,
     content_widget::Content,
     emails_widget::EmailsList,
-    imap::{self, get_account_mailboxes},
-    mail::{
-        self, Account, Address, Email, Envelope, Mailbox, MailboxWithMetadata, load_mbox_emails,
-    },
+    imap::{self},
+    mail::{Account, Email, Mailbox, MailboxWithMetadata, load_mbox_emails},
     mailboxes_widget::MailboxesList,
     model::{
-        self, ActivePane, EmailSelector, Message, Model, ReindexStatus, RunningState,
-        ScrollDirection,
+        ActivePane, EmailSelector, Message, Model, ReindexStatus, RunningState, ScrollDirection,
     },
     util::centered_rect,
 };
@@ -28,7 +25,6 @@ use ratatui::{
     style::Style,
     widgets::{Block, Clear, LineGauge, ListState, Paragraph, TableState, Widget},
 };
-use time::OffsetDateTime;
 use tracing::{debug, error};
 
 pub struct App {
@@ -315,9 +311,13 @@ impl App {
         }
     }
 
-    fn load_email(&mut self, uid: u32) -> Result<Option<Message>> {
+    fn load_email(&mut self, uid: Option<u32>) -> Result<Option<Message>> {
+        let Some(uid) = uid else {
+            self.model.content_pane.email = None;
+            return Ok(None);
+        };
         let mailbox = self.model.mbox_pane.current_mailbox();
-        self.model.content_pane.email = Email::load_from_db(&mailbox, uid, &self.db)?;
+        self.model.content_pane.email = Some(Email::load_from_db(&mailbox, uid, &self.db)?);
         Ok(None)
     }
 

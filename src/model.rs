@@ -92,7 +92,7 @@ pub(crate) enum Message {
     Scroll(ScrollDirection),
     FocusNext,
     FocusPrev,
-    SelectedEmail(u32),
+    SelectedEmail(Option<u32>),
     Batch(Vec<Message>),
     ToggleMailboxVisibility {
         mailbox: Mailbox,

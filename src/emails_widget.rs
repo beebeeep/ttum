@@ -32,6 +32,9 @@ pub(crate) struct EmailsList {
 
 impl EmailsList {
     pub(crate) fn scroll(&mut self, d: ScrollDirection) -> Option<Message> {
+        if self.emails.is_empty() {
+            return Some(Message::SelectedEmail(None));
+        }
         let old_selected = self.selected_email;
         let more = match d {
             ScrollDirection::Up => {
@@ -74,7 +77,7 @@ impl EmailsList {
 
         let selected = if old_selected != self.selected_email {
             let e = &self.emails[self.selected_email];
-            Some(Message::SelectedEmail(e.uid))
+            Some(Message::SelectedEmail(Some(e.uid)))
         } else {
             None
         };
@@ -124,11 +127,13 @@ impl EmailsList {
 
     pub(crate) fn select_email(&mut self, index: usize) -> Option<Message> {
         if index >= self.emails.len() {
-            return None;
+            return Some(Message::SelectedEmail(None));
         }
         self.selected_email = index;
         self.table_state.select(Some(index));
-        Some(Message::SelectedEmail(self.emails[self.selected_email].uid))
+        Some(Message::SelectedEmail(Some(
+            self.emails[self.selected_email].uid,
+        )))
     }
 }
 

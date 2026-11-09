@@ -12,7 +12,7 @@ use crate::{
 
 pub(crate) struct Content {
     pub(crate) focused: bool,
-    pub(crate) email: Email,
+    pub(crate) email: Option<Email>,
     scroll: (u16, u16),
 }
 
@@ -20,7 +20,7 @@ impl Content {
     pub(crate) fn new() -> Self {
         Self {
             focused: false,
-            email: Email::default(),
+            email: None,
             scroll: (0, 0),
         }
     }
@@ -61,7 +61,10 @@ impl Widget for &mut Content {
             .border_type(ratatui::widgets::BorderType::Rounded)
             .border_style(default_style);
 
-        let body = self.email.body.as_ref().map(AsRef::as_ref).unwrap_or("");
+        let body = match &self.email {
+            Some(email) => email.body.as_ref().map(AsRef::as_ref).unwrap_or(""),
+            None => "",
+        };
         let paragraph = Paragraph::new(body)
             .style(default_style)
             .wrap(Wrap { trim: true })
