@@ -390,9 +390,7 @@ pub(crate) fn get_account_mailboxes(account: &Account) -> Result<Vec<MailboxWith
                 .uid_validity
                 .context("expect uid_validity")?
                 .into(),
-            highest_mod_seq: mb_metadata
-                .highest_mod_seq
-                .context("expect highest_mod_seq")?,
+            highest_mod_seq: mb_metadata.highest_mod_seq.unwrap_or(0),
         });
     }
     Ok(result)

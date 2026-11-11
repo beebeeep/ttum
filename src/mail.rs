@@ -506,7 +506,7 @@ pub fn connect_to_accounts(
             imap::connect_starttls((host.as_ref(), port), &host, &connector)
                 .context("connecting to server")?
         } else {
-            imap::connect_starttls((host.as_ref(), port), &host, &connector)
+            imap::connect((host.as_ref(), port), &host, &connector)
                 .context("connecting to server")?
         };
         let mut session = client
