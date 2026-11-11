@@ -98,5 +98,6 @@ pub(crate) enum Message {
         mailbox: Mailbox,
         visible: bool,
     },
+    MailCompose(Box<str>),
     Quit,
 }

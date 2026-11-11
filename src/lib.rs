@@ -1,5 +1,6 @@
 pub mod app;
 pub(crate) mod color_scheme;
+pub(crate) mod compose_widget;
 pub(crate) mod content_widget;
 pub(crate) mod emails_widget;
 pub(crate) mod imap;

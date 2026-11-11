@@ -211,6 +211,11 @@ impl App {
                         visible: false,
                     })
                 }
+                KeyCode::Char('c') if matches!(self.model.active_pane, ActivePane::Mailboxes) => {
+                    Some(Message::MailCompose(
+                        self.model.mbox_pane.current_mailbox().account,
+                    ))
+                }
                 KeyCode::Tab => Some(Message::FocusNext),
                 KeyCode::BackTab => Some(Message::FocusPrev),
                 _ => None,
@@ -274,6 +279,10 @@ impl App {
                 .context("setting mailbox visibility")?,
             Message::StatusMessage(msg) => {
                 self.model.status_bar_text = msg.into_string();
+                None
+            }
+            Message::MailCompose(account) => {
+                self.model.running_state = RunningState::ComposeMail;
                 None
             }
         })
