@@ -1,6 +1,6 @@
 use std::sync::LazyLock;
 
-use ratatui::style::Color;
+use ratatui::style::{Color, Style};
 
 pub(crate) static COLOR_SCHEME: LazyLock<ColorScheme, fn() -> ColorScheme> =
     LazyLock::new(ColorScheme::load);
@@ -28,5 +28,8 @@ impl ColorScheme {
             status_bar_fg: Color::Rgb(0, 0, 0),
             status_bar_bg: Color::Rgb(0xd0, 0xd0, 0xd0),
         }
+    }
+    pub(crate) fn text_style(&self) -> Style {
+        Style::default().bg(self.text_bg).fg(self.text_fg)
     }
 }

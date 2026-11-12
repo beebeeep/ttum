@@ -1,11 +1,15 @@
-use std::fmt::Display;
+use std::{
+    fmt::Display,
+    time::{Duration, Instant},
+};
 
 use anyhow::Result;
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent};
 use rusqlite::Connection;
 use time::OffsetDateTime;
 
 use crate::{
+    compose_widget::ComposeView,
     content_widget::Content,
     emails_widget::EmailsList,
     mail::{Email, Mailbox, MailboxWithMetadata},
@@ -35,15 +39,16 @@ pub(crate) struct ReindexStatus {
     pub(crate) done: bool,
 }
 
-pub(crate) struct Model {
+pub(crate) struct Model<'a> {
     pub(crate) running_state: RunningState,
     pub(crate) active_pane: ActivePane,
     pub(crate) reindex_status: ReindexStatus,
     pub(crate) status_bar_text: String,
-
+    pub(crate) last_key: LastPressedKey,
     pub(crate) mbox_pane: MailboxesList,
     pub(crate) emails_pane: EmailsList,
     pub(crate) content_pane: Content,
+    pub(crate) compose_window: ComposeView<'a>,
 }
 
 #[derive(Default, PartialEq)]
@@ -98,6 +103,34 @@ pub(crate) enum Message {
         mailbox: Mailbox,
         visible: bool,
     },
-    MailCompose(Box<str>),
+    ShowComposeWindow(Box<str>),
+    CloseComposeWindow,
     Quit,
+}
+
+pub(crate) struct LastPressedKey {
+    key: KeyCode,
+    ts: Instant,
+}
+
+impl LastPressedKey {
+    const DOUBLE_PRESS_TIME: Duration = Duration::from_millis(300);
+
+    pub(crate) fn save(&mut self, key: &KeyCode) {
+        self.key = *key;
+        self.ts = Instant::now();
+    }
+
+    pub(crate) fn is_double(&self, key: &KeyCode) -> bool {
+        self.key == *key && self.ts.elapsed() <= Self::DOUBLE_PRESS_TIME
+    }
+}
+
+impl Default for LastPressedKey {
+    fn default() -> Self {
+        Self {
+            key: KeyCode::Backspace,
+            ts: Instant::now(),
+        }
+    }
 }

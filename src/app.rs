@@ -7,13 +7,15 @@ use std::{
 
 use crate::{
     color_scheme::COLOR_SCHEME,
+    compose_widget::ComposeView,
     content_widget::Content,
     emails_widget::EmailsList,
     imap::{self},
     mail::{Account, Email, Mailbox, MailboxWithMetadata, load_mbox_emails},
     mailboxes_widget::MailboxesList,
     model::{
-        ActivePane, EmailSelector, Message, Model, ReindexStatus, RunningState, ScrollDirection,
+        ActivePane, EmailSelector, LastPressedKey, Message, Model, ReindexStatus, RunningState,
+        ScrollDirection,
     },
     util::centered_rect,
 };
@@ -27,15 +29,15 @@ use ratatui::{
 };
 use tracing::{debug, error};
 
-pub struct App {
-    model: Model,
+pub struct App<'a> {
+    model: Model<'a>,
 
     db: rusqlite::Connection,
     events_rx: mpsc::Receiver<Message>,
     events_tx: mpsc::Sender<Message>,
 }
 
-impl App {
+impl<'a> App<'a> {
     pub fn load(mut db: rusqlite::Connection, update: bool) -> Result<Self> {
         let mailboxes =
             MailboxWithMetadata::load_all(update, &mut db).context("loading mailboxes")?;
@@ -59,7 +61,9 @@ impl App {
                     focused: false,
                 },
                 content_pane: Content::new(),
+                compose_window: ComposeView::new_mail(Box::from("")),
                 reindex_status: ReindexStatus::default(),
+                last_key: LastPressedKey::default(),
             },
             db,
             events_rx,
@@ -110,7 +114,7 @@ impl App {
         match &self.model.running_state {
             RunningState::MainView => self.main_view(frame, layout[0]),
             RunningState::Done => {}
-            RunningState::ComposeMail => todo!(),
+            RunningState::ComposeMail => self.compose_view(frame, layout[0]),
             RunningState::Reindex => self.reindex_view(frame, layout[0]),
         }
     }
@@ -129,6 +133,7 @@ impl App {
             Layout::horizontal([Constraint::Percentage(30), Constraint::Fill(1)]).split(area);
         let right_rows = Layout::vertical([Constraint::Percentage(40), Constraint::Percentage(60)])
             .split(columns[1]);
+        frame.render_widget(Clear::default(), area);
         frame.render_widget(&mut self.model.mbox_pane, columns[0]);
         frame.render_widget(&mut self.model.emails_pane, right_rows[0]);
         frame.render_widget(&mut self.model.content_pane, right_rows[1]);
@@ -148,6 +153,11 @@ impl App {
                 Err(_) => return,
             }
         }
+    }
+
+    fn compose_view(&mut self, frame: &mut Frame, area: Rect) {
+        self.main_view(frame, area);
+        frame.render_widget(&self.model.compose_window, area);
     }
 
     fn reindex_view(&mut self, frame: &mut Frame, area: Rect) {
@@ -212,7 +222,7 @@ impl App {
                     })
                 }
                 KeyCode::Char('c') if matches!(self.model.active_pane, ActivePane::Mailboxes) => {
-                    Some(Message::MailCompose(
+                    Some(Message::ShowComposeWindow(
                         self.model.mbox_pane.current_mailbox().account,
                     ))
                 }
@@ -221,7 +231,12 @@ impl App {
                 _ => None,
             },
             RunningState::Done => None,
-            RunningState::ComposeMail => None,
+            RunningState::ComposeMail => match key.code {
+                KeyCode::Esc if self.model.last_key.is_double(&KeyCode::Esc) => {
+                    Some(Message::CloseComposeWindow)
+                }
+                _ => None,
+            },
             RunningState::Reindex => match key.code {
                 KeyCode::Char('q') => Some(Message::Quit),
                 _ => None,
@@ -231,7 +246,11 @@ impl App {
 
     fn update(&mut self, msg: Message) -> Result<Option<Message>> {
         Ok(match msg {
-            Message::KeyPress(k) => self.handle_key(k),
+            Message::KeyPress(k) => {
+                let r = self.handle_key(k);
+                self.model.last_key.save(&k.code);
+                r
+            }
             Message::Scroll(direction) => self.handle_scroll(direction),
             Message::FocusNext => self.change_focus(true)?,
             Message::FocusPrev => self.change_focus(false)?,
@@ -281,8 +300,13 @@ impl App {
                 self.model.status_bar_text = msg.into_string();
                 None
             }
-            Message::MailCompose(account) => {
+            Message::ShowComposeWindow(account) => {
                 self.model.running_state = RunningState::ComposeMail;
+                self.model.compose_window = ComposeView::new_mail(account);
+                None
+            }
+            Message::CloseComposeWindow => {
+                self.model.running_state = RunningState::MainView;
                 None
             }
         })
