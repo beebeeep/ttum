@@ -63,6 +63,10 @@ fn init_db(file: &str) -> Result<Connection> {
         "CREATE INDEX IF NOT EXISTS idx_email_attachement ON email_attachements(account, mailbox, uid, name)",
         (),
     )?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_email_address_uid ON email_addresses (type, account, mailbox, uid)",
+        (),
+    )?;
     Ok(conn)
 }
 
